@@ -1,0 +1,45 @@
+# Dataset and derived arrays (not redistributed)
+ciciot2023/
+data/
+*.npy
+*.csv
+archive*.zip
+
+# Training outputs
+runs/
+figures/
+*.pt
+*.pkl
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+*.toc
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Internal working notes - not for distribution
+REVIEW_NOTES.md
+RESEARCH_ASSESSMENT.md
+CODE_VERIFICATION.md
+
+# Manuscript source is kept out of the public repository while the
+# paper is under review, so that a public copy of the full text does
+# not surface in similarity screening. Figures are retained.
+paper/*.tex
+*.tex
