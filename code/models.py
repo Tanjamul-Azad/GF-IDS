@@ -13,6 +13,8 @@ INPUT_DIM and NUM_CLASSES are set by the preprocessing stage
 import torch
 import torch.nn as nn
 
+from binary_ops import BinaryActivation, BinaryLinear
+
 
 # ─────────────────────────────────────────────────────────────
 # Baseline 1 — MLP
@@ -102,23 +104,24 @@ class LSTMModel(nn.Module):
 # are extracted, and binarizing the output breaks the Softmax
 # probability estimates needed for multi-class classification.
 # ─────────────────────────────────────────────────────────────
-class BinaryLinear(nn.Linear):
-    def forward(self, x):
-        w_b = torch.sign(self.weight)
-        w_b[w_b == 0] = 1
-        return nn.functional.linear(x, w_b, self.bias)
-
-
+# Weights are binarized through SignSTE, so gradients reach the
+# underlying real-valued weights via the straight-through estimator
+# (see binary_ops.py). With binarize_activations=True the tensor
+# flowing between hidden layers is binarized too, which is what
+# reduces the hidden-layer matrix products to XNOR + popcount.
+# ─────────────────────────────────────────────────────────────
 class BNNModel(nn.Module):
-    def __init__(self, input_dim, num_classes):
+    def __init__(self, input_dim, num_classes, binarize_activations=True):
         super().__init__()
+        act = BinaryActivation if binarize_activations else nn.Hardtanh
+
         self.input_layer = nn.Linear(input_dim, 128)
         self.hidden1 = nn.Sequential(
-            BinaryLinear(128, 128), nn.BatchNorm1d(128), nn.Hardtanh())
+            BinaryLinear(128, 128), nn.BatchNorm1d(128), act())
         self.hidden2 = nn.Sequential(
-            BinaryLinear(128, 64), nn.BatchNorm1d(64), nn.Hardtanh())
+            BinaryLinear(128, 64), nn.BatchNorm1d(64), act())
         self.hidden3 = nn.Sequential(
-            BinaryLinear(64, 32), nn.BatchNorm1d(32), nn.Hardtanh())
+            BinaryLinear(64, 32), nn.BatchNorm1d(32), act())
         self.output_layer = nn.Linear(32, num_classes)
 
     def forward(self, x):

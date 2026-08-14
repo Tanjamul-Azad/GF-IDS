@@ -1,6 +1,6 @@
 # GF-IDS: Green Federated Intrusion Detection for IoT
 
-Code and figures for:
+Code, figures and manuscript source for:
 
 > **Green Federated Intrusion Detection for IoT: Evaluating the
 > Computation–Communication Trade-off using Binarized Neural Networks**
@@ -40,9 +40,10 @@ code/
   evaluate.py          security metrics + efficiency metrics
   figures.py           regenerates every figure in the paper
 paper/
-  *.png, final dig.pdf figures reported in the manuscript
+  *.png, final dig.pdf   figures reported in the manuscript
 docs/
-  EXPERIMENTAL_SETUP.md  full configuration and reproduction notes
+  EXPERIMENTAL_SETUP.md      full configuration and reproduction notes
+  EFFICIENCY_MEASUREMENT.md  how payload and operation counts are measured
 ```
 
 The manuscript source is not included while the paper is under review.

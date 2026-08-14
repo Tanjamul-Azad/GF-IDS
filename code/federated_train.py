@@ -25,6 +25,7 @@ import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 
+from binary_ops import binary_weight_keys, clip_all_binary_weights
 from models import MODEL_REGISTRY
 
 # ── Configuration (matches the reported experiments) ─────────
@@ -79,7 +80,13 @@ def get_loader(X, y, batch_size=BATCH_SIZE):
 
 
 def train_one_round(model, loader, optimizer, criterion, epochs):
-    """Local training: E epochs of Adam on one client's shard."""
+    """Local training: E epochs of Adam on one client's shard.
+
+    After each step the latent weights of any binary layer are
+    clamped back into [-1, 1]. Without that clamp they drift outside
+    the STE gradient window, the surrogate gradient goes to zero and
+    those layers stop learning.
+    """
     model.train()
     for _ in range(epochs):
         for X_b, y_b in loader:
@@ -88,6 +95,7 @@ def train_one_round(model, loader, optimizer, criterion, epochs):
             loss = criterion(model(X_b), y_b)
             loss.backward()
             optimizer.step()
+            clip_all_binary_weights(model)
 
 
 @torch.no_grad()
@@ -105,10 +113,23 @@ def evaluate(model, X, y, batch_size=1024):
     return correct / total
 
 
-def fedavg(local_states, local_sizes):
-    """Sample-count-weighted average of client parameters.
+def fedavg(local_states, local_sizes, rebinarize_keys=None):
+    """Sample-count-weighted average, with optional re-binarization.
 
-    w_global = sum_k (n_k / n) * w_k
+    Aggregation runs on the real-valued weights:
+
+        W = sum_k (n_k / n) * W_k
+
+    Averaging must happen in full precision. Averaging already-binary
+    values would produce fractional results that are neither valid
+    binary weights nor meaningful magnitudes.
+
+    The averaged binary layers are then mapped back onto {-1, +1}:
+
+        W_global = sign(W)
+
+    so that what is distributed to the clients is a genuinely binary
+    global model rather than a real-valued one.
     """
     total = sum(local_sizes)
     new_state = {}
@@ -117,19 +138,34 @@ def fedavg(local_states, local_sizes):
             local_states[i][key] * (local_sizes[i] / total)
             for i in range(len(local_states))
         )
+
+    if rebinarize_keys:
+        for key in rebinarize_keys:
+            if key in new_state:
+                s = torch.sign(new_state[key])
+                new_state[key] = torch.where(
+                    s == 0, torch.ones_like(s), s)
+
     return new_state
 
 
 def federated_training(model_name, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=ROUNDS, epochs=LOCAL_EPOCHS,
-                       lr=LEARNING_RATE):
+                       lr=LEARNING_RATE, rebinarize=True):
     ModelClass = MODEL_REGISTRY[model_name]
 
     print(f"\n{'=' * 45}\n  Training: {model_name}\n{'=' * 45}")
     global_model = ModelClass(input_dim, num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     history = []
+
+    # Only binary layers are re-binarized after aggregation; biases
+    # and BatchNorm parameters stay in full precision.
+    rebin_keys = binary_weight_keys(global_model) if rebinarize else None
+    if rebin_keys:
+        print(f"  Re-binarizing after aggregation: "
+              f"{sorted(rebin_keys)}")
 
     for t in range(rounds):
         local_states, local_sizes = [], []
@@ -144,7 +180,8 @@ def federated_training(model_name, clients, X_test, y_test,
             local_states.append(copy.deepcopy(local_model.state_dict()))
             local_sizes.append(len(client["X_train"]))
 
-        global_model.load_state_dict(fedavg(local_states, local_sizes))
+        global_model.load_state_dict(
+            fedavg(local_states, local_sizes, rebin_keys))
 
         acc = evaluate(global_model, X_test, y_test)
         history.append({"round": t + 1, "accuracy": acc})

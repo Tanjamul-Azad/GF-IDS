@@ -14,16 +14,28 @@ Efficiency metrics:
 
 Payload size accounting
 -----------------------
-`payload_bits` below prices any hidden-layer weight tensor at 1 bit
-per parameter and everything else at 32 bits. This is an ANALYTICAL
-figure describing an idealized 1-bit encoding of the binarized
-layers; it is not a measurement of the bytes the simulation actually
-transfers, since `federated_train.py` moves full float32 state dicts.
-`measured_payload_bits` is provided alongside it to report the size
-of the tensors as they are actually serialised.
+Three figures are reported so the communication claim can be stated
+precisely:
 
-Report whichever figure matches the claim being made, and say which
-one it is.
+  PackedPayload    binary weight matrices actually bit-packed with
+                   numpy.packbits, everything else at native dtype.
+                   This is the real transmitted size.
+  AnalyticPayload  the same thing computed analytically (1 bit per
+                   binary weight, 32 bits otherwise). Should agree
+                   with PackedPayload up to byte-alignment padding.
+  Float32Payload   the whole state dict sent uncompressed, i.e. what
+                   a naive implementation would transmit.
+
+Quote PackedPayload for communication-efficiency claims, and use
+Float32Payload to show what the packing buys.
+
+Operation counts
+----------------
+FLOPs and BOPs are reported separately. Binary layers run as XNOR +
+popcount rather than multiply-accumulate, so folding them into a
+single FLOP number would misrepresent both the cost and the saving.
+A custom thop handler is registered for BinaryLinear, since thop
+dispatches on exact module type and would otherwise skip it silently.
 """
 
 import argparse
@@ -35,6 +47,7 @@ from sklearn.metrics import (confusion_matrix, f1_score, matthews_corrcoef,
                              precision_score, recall_score)
 from torch.utils.data import DataLoader, TensorDataset
 
+from binary_ops import BinaryLinear, binary_weight_keys
 from models import MODEL_REGISTRY
 
 DATA_DIR = "./data/"
@@ -78,38 +91,95 @@ def security_metrics(preds, labels, num_classes):
 
 
 def payload_bits(model):
-    """Idealized payload: 1 bit per binarized hidden weight, else 32."""
+    """Payload with binary layers priced at 1 bit per weight.
+
+    Only the 2-D BinaryLinear weight matrices are priced at 1 bit.
+    Biases and BatchNorm affine parameters remain Float32, matching
+    the hybrid-precision design.
+
+    Iterates the full state dict rather than named_parameters(),
+    because FedAvg transports the whole state dict - including the
+    BatchNorm running statistics, which are not parameters but must
+    still be transmitted every round. Counting only named_parameters()
+    understates the payload of every model that uses BatchNorm.
+    """
+    binary_keys = binary_weight_keys(model)
     total = 0
-    for name, param in model.named_parameters():
-        is_hidden_weight = ("hidden" in name) and name.endswith("weight")
-        total += param.numel() * (1 if is_hidden_weight else 32)
+    for name, tensor in model.state_dict().items():
+        if name in binary_keys:
+            total += tensor.numel()
+        else:
+            total += tensor.numel() * tensor.element_size() * 8
     return total
 
 
-def measured_payload_bits(model):
-    """Actual serialised size of the state dict, in bits."""
-    return sum(p.numel() * p.element_size() * 8
-               for p in model.state_dict().values())
+def packed_payload_bits(model):
+    """Payload measured by actually bit-packing the binary layers.
+
+    Serialises the state dict the way a real client would: binary
+    weight matrices are packed with numpy.packbits (8 weights per
+    byte), everything else keeps its native dtype. Returns the true
+    transmitted size rather than an analytical estimate.
+    """
+    binary_keys = binary_weight_keys(model)
+    total_bits = 0
+    for name, tensor in model.state_dict().items():
+        if name in binary_keys:
+            signs = (tensor.detach().cpu().numpy() > 0).astype(np.uint8)
+            packed = np.packbits(signs.reshape(-1))
+            total_bits += packed.nbytes * 8
+        else:
+            total_bits += tensor.numel() * tensor.element_size() * 8
+    return total_bits
+
+
+def float32_payload_bits(model):
+    """Payload if the whole state dict is sent as-is, uncompressed."""
+    return sum(t.numel() * t.element_size() * 8
+               for t in model.state_dict().values())
+
+
+def count_binary_linear(module, x, y):
+    """thop handler for BinaryLinear.
+
+    thop dispatches on the exact module type, so BinaryLinear - being
+    a subclass of nn.Linear - is not matched by the built-in rule and
+    would silently contribute zero operations. Registering this
+    handler makes the binary layers count like any other dense layer,
+    so FLOPs across models are compared on the same basis.
+
+    Binary layers execute as XNOR + popcount rather than
+    multiply-accumulate, so these are reported separately as binary
+    operations (BOPs) rather than folded into the FLOP total.
+    """
+    module.total_ops += torch.DoubleTensor(
+        [module.in_features * module.out_features])
 
 
 def efficiency_metrics(model, X_test, y_test, input_dim):
     params = sum(p.numel() for p in model.parameters())
 
-    ideal_kb = payload_bits(model) / 8 / 1024
-    measured_kb = measured_payload_bits(model) / 8 / 1024
+    packed_kb = packed_payload_bits(model) / 8 / 1024
+    analytic_kb = payload_bits(model) / 8 / 1024
+    float32_kb = float32_payload_bits(model) / 8 / 1024
 
-    # FLOPs. NOTE: thop dispatches on the exact module type, so a
-    # subclass such as BinaryLinear is not matched by the built-in
-    # nn.Linear rule and contributes zero unless a custom handler is
-    # registered. verbose=True prints a warning for every unhandled
-    # module - check that output before quoting these numbers.
+    # Operation counts, split by precision so the comparison is
+    # explicit about what is a float multiply-accumulate and what is
+    # a bitwise operation.
     try:
         from thop import profile
         dummy = torch.randn(1, input_dim).to(device)
-        flops, _ = profile(model, inputs=(dummy,), verbose=True)
-        flops_m = round(flops / 1e6, 3)
+
+        total_ops, _ = profile(model, inputs=(dummy,), verbose=False,
+                               custom_ops={BinaryLinear: count_binary_linear})
+        # Binary layers alone, to separate BOPs from FLOPs.
+        bops = sum(m.in_features * m.out_features
+                   for m in model.modules()
+                   if isinstance(m, BinaryLinear))
+        flops_m = round((total_ops - bops) / 1e6, 4)
+        bops_m = round(bops / 1e6, 4)
     except ImportError:
-        flops_m = None
+        flops_m = bops_m = None
 
     # Wall-clock latency over a fixed 10k-sample slice.
     import time
@@ -125,8 +195,10 @@ def efficiency_metrics(model, X_test, y_test, input_dim):
 
     return {"Parameters": params,
             "FLOPs(M)": flops_m,
-            "IdealPayload(KB)": round(ideal_kb, 2),
-            "MeasuredPayload(KB)": round(measured_kb, 2),
+            "BOPs(M)": bops_m,
+            "PackedPayload(KB)": round(packed_kb, 2),
+            "AnalyticPayload(KB)": round(analytic_kb, 2),
+            "Float32Payload(KB)": round(float32_kb, 2),
             "InfTime(ms)": inf_ms}
 
 
