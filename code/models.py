@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 
 from binary_ops import BinaryActivation, BinaryLinear
+from quant_ops import QuantLinear
 
 
 # ─────────────────────────────────────────────────────────────
@@ -132,9 +133,71 @@ class BNNModel(nn.Module):
         return self.output_layer(x)
 
 
+# ─────────────────────────────────────────────────────────────
+# Baseline 4 — INT8 quantized MLP
+#
+# Same topology and same training configuration as MLPModel, with
+# every dense layer constrained to an 8 bit grid instead of Float32.
+# This is the baseline that answers "why one bit rather than eight",
+# and it is the strongest competitor to the proposed model on
+# communication cost, since int8 already divides the payload by four
+# while keeping accuracy essentially intact.
+# ─────────────────────────────────────────────────────────────
+class MLPInt8Model(nn.Module):
+    def __init__(self, input_dim, num_classes, bits=8):
+        super().__init__()
+        self.net = nn.Sequential(
+            QuantLinear(input_dim, 128, bits=bits), nn.ReLU(),
+            nn.BatchNorm1d(128),
+            QuantLinear(128, 64, bits=bits), nn.ReLU(),
+            nn.BatchNorm1d(64),
+            QuantLinear(64, 32, bits=bits), nn.ReLU(),
+            QuantLinear(32, num_classes, bits=bits),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+# ─────────────────────────────────────────────────────────────
+# Proposed variant — BNN with int8 input and output layers
+#
+# The hybrid design keeps the input and output layers in Float32
+# because binarizing them costs too much accuracy. Those two layers
+# then dominate the payload, since together they hold 5,056 of the
+# model's weights against 26,624 in the binarized hidden layers.
+# Quantizing them to 8 bits rather than leaving them at 32 removes
+# most of that remaining cost without the accuracy penalty that
+# binarizing them would cause.
+# ─────────────────────────────────────────────────────────────
+class BNNInt8IOModel(nn.Module):
+    def __init__(self, input_dim, num_classes,
+                 binarize_activations=True, bits=8):
+        super().__init__()
+        act = BinaryActivation if binarize_activations else nn.Hardtanh
+
+        self.input_layer = QuantLinear(input_dim, 128, bits=bits)
+        self.hidden1 = nn.Sequential(
+            BinaryLinear(128, 128), nn.BatchNorm1d(128), act())
+        self.hidden2 = nn.Sequential(
+            BinaryLinear(128, 64), nn.BatchNorm1d(64), act())
+        self.hidden3 = nn.Sequential(
+            BinaryLinear(64, 32), nn.BatchNorm1d(32), act())
+        self.output_layer = QuantLinear(32, num_classes, bits=bits)
+
+    def forward(self, x):
+        x = torch.relu(self.input_layer(x))
+        x = self.hidden1(x)
+        x = self.hidden2(x)
+        x = self.hidden3(x)
+        return self.output_layer(x)
+
+
 MODEL_REGISTRY = {
     "MLP": MLPModel,
     "CNN": CNNModel,
     "LSTM": LSTMModel,
+    "MLP-INT8": MLPInt8Model,
     "BNN": BNNModel,
+    "BNN-INT8IO": BNNInt8IOModel,
 }

@@ -49,6 +49,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from binary_ops import BinaryLinear, binary_weight_keys
 from models import MODEL_REGISTRY
+from quant_ops import quant_weight_keys
 
 DATA_DIR = "./data/"
 RUN_DIR = "./runs/"
@@ -90,44 +91,63 @@ def security_metrics(preds, labels, num_classes):
             "FPR(%)": round(fpr * 100, 2)}
 
 
-def payload_bits(model):
-    """Payload with binary layers priced at 1 bit per weight.
+def precision_map(model):
+    """Bits per element for every weight tensor that is not Float32.
 
-    Only the 2-D BinaryLinear weight matrices are priced at 1 bit.
-    Biases and BatchNorm affine parameters remain Float32, matching
-    the hybrid-precision design.
+    Binary layers contribute 1 bit per weight, int8 layers 8 bits.
+    Anything absent from this map keeps its native dtype.
+    """
+    bits = {k: 1 for k in binary_weight_keys(model)}
+    bits.update(quant_weight_keys(model))
+    return bits
+
+
+def payload_bits(model):
+    """Payload with each weight tensor priced at its own precision.
+
+    Biases and BatchNorm parameters stay Float32, matching the hybrid
+    precision design. A quantized tensor also carries one Float32
+    scale factor, which is counted here because the receiver cannot
+    reconstruct the weights without it.
 
     Iterates the full state dict rather than named_parameters(),
-    because FedAvg transports the whole state dict - including the
-    BatchNorm running statistics, which are not parameters but must
-    still be transmitted every round. Counting only named_parameters()
-    understates the payload of every model that uses BatchNorm.
+    because FedAvg transports the whole state dict, including the
+    BatchNorm running statistics. Those are buffers rather than
+    parameters but still cross the network every round, so counting
+    only named_parameters() understates the payload of every model
+    that uses BatchNorm.
     """
-    binary_keys = binary_weight_keys(model)
+    bits = precision_map(model)
     total = 0
     for name, tensor in model.state_dict().items():
-        if name in binary_keys:
-            total += tensor.numel()
+        if name in bits:
+            total += tensor.numel() * bits[name]
+            if bits[name] > 1:
+                total += 32          # per-tensor scale factor
         else:
             total += tensor.numel() * tensor.element_size() * 8
     return total
 
 
 def packed_payload_bits(model):
-    """Payload measured by actually bit-packing the binary layers.
+    """Payload measured by actually encoding each tensor.
 
-    Serialises the state dict the way a real client would: binary
-    weight matrices are packed with numpy.packbits (8 weights per
-    byte), everything else keeps its native dtype. Returns the true
-    transmitted size rather than an analytical estimate.
+    Serialises the state dict the way a real client would. Binary
+    weight matrices are packed with numpy.packbits at eight weights
+    per byte; int8 layers are cast to one byte per weight plus a
+    Float32 scale; everything else keeps its native dtype. This is a
+    measurement of the encoded bytes rather than an analytical
+    estimate.
     """
-    binary_keys = binary_weight_keys(model)
+    bits = precision_map(model)
     total_bits = 0
     for name, tensor in model.state_dict().items():
-        if name in binary_keys:
-            signs = (tensor.detach().cpu().numpy() > 0).astype(np.uint8)
-            packed = np.packbits(signs.reshape(-1))
+        w = tensor.detach().cpu().numpy()
+        if bits.get(name) == 1:
+            packed = np.packbits((w > 0).astype(np.uint8).reshape(-1))
             total_bits += packed.nbytes * 8
+        elif bits.get(name) == 8:
+            total_bits += w.astype(np.int8).nbytes * 8 + 32
         else:
             total_bits += tensor.numel() * tensor.element_size() * 8
     return total_bits

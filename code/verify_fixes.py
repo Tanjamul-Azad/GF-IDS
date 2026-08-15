@@ -178,10 +178,16 @@ from evaluate import (float32_payload_bits, packed_payload_bits,
 bnn = BNNModel(INPUT_DIM, NUM_CLASSES)
 mlp = MLPModel(INPUT_DIM, NUM_CLASSES)
 
+from models import BNNInt8IOModel, MLPInt8Model
+mlp_int8 = MLPInt8Model(INPUT_DIM, NUM_CLASSES)
+bnn_int8io = BNNInt8IOModel(INPUT_DIM, NUM_CLASSES)
+
 bnn_packed = packed_payload_bits(bnn) / 8 / 1024
 bnn_analytic = payload_bits(bnn) / 8 / 1024
 bnn_float32 = float32_payload_bits(bnn) / 8 / 1024
 mlp_float32 = float32_payload_bits(mlp) / 8 / 1024
+mlp_int8_kb = packed_payload_bits(mlp_int8) / 8 / 1024
+bnn_int8io_kb = packed_payload_bits(bnn_int8io) / 8 / 1024
 
 check("packed and analytic payloads agree (within padding)",
       abs(bnn_packed - bnn_analytic) < 0.05,
@@ -190,13 +196,25 @@ check("packing actually shrinks the BNN payload",
       bnn_packed < bnn_float32,
       f"float32 = {bnn_float32:.2f} KB -> packed = {bnn_packed:.2f} KB "
       f"({(1 - bnn_packed / bnn_float32) * 100:.1f}% smaller)")
-print(f"\n         BNN packed   : {bnn_packed:8.2f} KB")
-print(f"         BNN float32  : {bnn_float32:8.2f} KB")
-print(f"         MLP float32  : {mlp_float32:8.2f} KB")
-print(f"         packed BNN vs float32 MLP: "
+check("int8 MLP is roughly a quarter of float32 MLP",
+      2.5 < mlp_float32 / mlp_int8_kb < 4.5,
+      f"float32 = {mlp_float32:.2f} KB -> int8 = {mlp_int8_kb:.2f} KB "
+      f"({mlp_float32 / mlp_int8_kb:.2f}x)")
+check("quantizing the BNN input/output layers helps",
+      bnn_int8io_kb < bnn_packed,
+      f"{bnn_packed:.2f} KB -> {bnn_int8io_kb:.2f} KB")
+
+print(f"\n         MLP  float32       : {mlp_float32:8.2f} KB")
+print(f"         MLP  int8          : {mlp_int8_kb:8.2f} KB")
+print(f"         BNN  float32       : {bnn_float32:8.2f} KB")
+print(f"         BNN  packed (f32 IO): {bnn_packed:8.2f} KB")
+print(f"         BNN  packed (int8 IO): {bnn_int8io_kb:7.2f} KB")
+print(f"\n         BNN(f32 IO)  vs MLP float32 : "
       f"{(1 - bnn_packed / mlp_float32) * 100:+.1f}%")
-print(f"         float32 BNN vs float32 MLP: "
-      f"{(1 - bnn_float32 / mlp_float32) * 100:+.1f}%")
+print(f"         BNN(f32 IO)  vs MLP int8    : "
+      f"{(1 - bnn_packed / mlp_int8_kb) * 100:+.1f}%   <-- the honest test")
+print(f"         BNN(int8 IO) vs MLP int8    : "
+      f"{(1 - bnn_int8io_kb / mlp_int8_kb) * 100:+.1f}%")
 
 # ── 7. thop sees the binary layers ───────────────────────────
 print("\n7. Operation counting")

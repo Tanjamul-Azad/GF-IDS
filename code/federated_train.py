@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from binary_ops import binary_weight_keys, clip_all_binary_weights
 from models import MODEL_REGISTRY
+from quant_ops import fake_quant, quant_weight_keys
 
 # ── Configuration (matches the reported experiments) ─────────
 DATA_DIR = "./data/"
@@ -113,7 +114,8 @@ def evaluate(model, X, y, batch_size=1024):
     return correct / total
 
 
-def fedavg(local_states, local_sizes, rebinarize_keys=None):
+def fedavg(local_states, local_sizes, rebinarize_keys=None,
+           requantize_keys=None):
     """Sample-count-weighted average, with optional re-binarization.
 
     Aggregation runs on the real-valued weights:
@@ -146,6 +148,14 @@ def fedavg(local_states, local_sizes, rebinarize_keys=None):
                 new_state[key] = torch.where(
                     s == 0, torch.ones_like(s), s)
 
+    # The int8 counterpart: snap the averaged weights back onto the
+    # quantization grid, so the distributed model is genuinely 8 bit
+    # and the baseline is treated on the same terms as the proposal.
+    if requantize_keys:
+        for key, bits in requantize_keys.items():
+            if key in new_state:
+                new_state[key] = fake_quant(new_state[key], bits)
+
     return new_state
 
 
@@ -160,12 +170,16 @@ def federated_training(model_name, clients, X_test, y_test,
     criterion = nn.CrossEntropyLoss()
     history = []
 
-    # Only binary layers are re-binarized after aggregation; biases
-    # and BatchNorm parameters stay in full precision.
+    # Only weight matrices are snapped back to their target precision
+    # after aggregation; biases and BatchNorm parameters stay full
+    # precision in every model.
     rebin_keys = binary_weight_keys(global_model) if rebinarize else None
+    requant_keys = quant_weight_keys(global_model) if rebinarize else None
     if rebin_keys:
-        print(f"  Re-binarizing after aggregation: "
-              f"{sorted(rebin_keys)}")
+        print(f"  Re-binarizing after aggregation: {sorted(rebin_keys)}")
+    if requant_keys:
+        print(f"  Re-quantizing after aggregation: "
+              f"{sorted(requant_keys)}")
 
     for t in range(rounds):
         local_states, local_sizes = [], []
@@ -181,7 +195,7 @@ def federated_training(model_name, clients, X_test, y_test,
             local_sizes.append(len(client["X_train"]))
 
         global_model.load_state_dict(
-            fedavg(local_states, local_sizes, rebin_keys))
+            fedavg(local_states, local_sizes, rebin_keys, requant_keys))
 
         acc = evaluate(global_model, X_test, y_test)
         history.append({"round": t + 1, "accuracy": acc})
