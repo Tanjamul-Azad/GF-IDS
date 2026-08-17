@@ -51,11 +51,26 @@ def load_data():
     return X_train, X_test, y_train, y_test
 
 
+def set_seed(seed):
+    """Seed every source of randomness the run depends on.
+
+    Without this the client partition and the weight initialization
+    differ on every run, so two models cannot be said to have been
+    trained under the same conditions and no result can be reproduced.
+    """
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
 def split_clients(X_train, y_train, num_clients=NUM_CLIENTS):
     """Partition the training set into IID shards, one per client.
 
     Each shard is further split into a local train/test portion;
     only the local train portion is used for federated updates.
+
+    Seeded by set_seed(), so every model in a comparison receives the
+    identical partition.
     """
     indices = np.random.permutation(len(X_train))
     X_shuf, y_shuf = X_train[indices], y_train[indices]
@@ -162,7 +177,7 @@ def fedavg(local_states, local_sizes, rebinarize_keys=None,
 def federated_training(model_name, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=ROUNDS, epochs=LOCAL_EPOCHS,
-                       lr=LEARNING_RATE, rebinarize=True):
+                       lr=LEARNING_RATE, rebinarize=True, seed=None):
     ModelClass = MODEL_REGISTRY[model_name]
 
     print(f"\n{'=' * 45}\n  Training: {model_name}\n{'=' * 45}")
@@ -205,9 +220,10 @@ def federated_training(model_name, clients, X_test, y_test,
             torch.save(global_model.state_dict(),
                        os.path.join(OUT_DIR, f"{model_name}_checkpoint.pt"))
 
+    tag = f"{model_name}_seed{seed}" if seed is not None else model_name
     torch.save(global_model.state_dict(),
-               os.path.join(OUT_DIR, f"{model_name}_final.pt"))
-    with open(os.path.join(OUT_DIR, f"{model_name}_history.pkl"), "wb") as f:
+               os.path.join(OUT_DIR, f"{tag}_final.pt"))
+    with open(os.path.join(OUT_DIR, f"{tag}_history.pkl"), "wb") as f:
         pickle.dump(history, f)
 
     best = max(history, key=lambda h: h["accuracy"])
@@ -223,9 +239,14 @@ def main():
     parser.add_argument("--rounds", type=int, default=ROUNDS)
     parser.add_argument("--epochs", type=int, default=LOCAL_EPOCHS)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
+    parser.add_argument("--seed", type=int, default=SEED,
+                        help="seed for the client split and weight init; "
+                             "vary it to obtain error bars")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
+    set_seed(args.seed)
+    print(f"Seed: {args.seed}")
 
     X_train, X_test, y_train, y_test = load_data()
     input_dim = X_train.shape[1]
@@ -236,7 +257,8 @@ def main():
     clients = split_clients(X_train, y_train)
     federated_training(args.model, clients, X_test, y_test,
                        input_dim, num_classes,
-                       rounds=args.rounds, epochs=args.epochs, lr=args.lr)
+                       rounds=args.rounds, epochs=args.epochs, lr=args.lr,
+                       seed=args.seed)
 
 
 if __name__ == "__main__":
