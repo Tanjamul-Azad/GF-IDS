@@ -5,11 +5,15 @@ data/
 *.csv
 archive*.zip
 
-# Training outputs
-runs/
-figures/
+# Training outputs: results.csv, seed_summary.csv, history.pkl and
+# figures/ are tracked on purpose, they are the evidence behind the
+# paper's numbers and are tiny. Model checkpoints (*.pt) are NOT
+# tracked: with the client split and weight init now seeded, any
+# checkpoint can be regenerated exactly from the code, the data and
+# the seed, so storing the binary weights themselves would only add
+# repeated dead weight to the repo across every rerun and variant.
+runs/*.pt
 *.pt
-*.pkl
 
 # LaTeX build artifacts
 *.aux
