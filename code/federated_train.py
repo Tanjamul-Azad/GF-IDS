@@ -174,15 +174,44 @@ def fedavg(local_states, local_sizes, rebinarize_keys=None,
     return new_state
 
 
+def class_weights_from(clients, num_classes):
+    """Inverse-frequency class weights, pooled across all clients.
+
+    The dataset is severely imbalanced (the largest class has close to
+    848,000 test instances, several rare classes fewer than 150), and
+    several classes never get predicted at all under a plain loss.
+    Weighting the loss by inverse class frequency pushes the optimizer
+    to pay attention to those classes instead of writing them off, at
+    the cost of some accuracy on the dominant ones. Counts are pooled
+    across all clients before the split into rounds, so every client
+    uses the same weights and the comparison to the unweighted run
+    stays otherwise identical.
+    """
+    counts = torch.zeros(num_classes)
+    for client in clients:
+        y = torch.LongTensor(client["y_train"])
+        counts += torch.bincount(y, minlength=num_classes).float()
+    weights = 1.0 / counts.clamp(min=1)
+    return weights * (num_classes / weights.sum())
+
+
 def federated_training(model_name, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=ROUNDS, epochs=LOCAL_EPOCHS,
-                       lr=LEARNING_RATE, rebinarize=True, seed=None):
+                       lr=LEARNING_RATE, rebinarize=True, seed=None,
+                       class_weighted=False):
     ModelClass = MODEL_REGISTRY[model_name]
 
     print(f"\n{'=' * 45}\n  Training: {model_name}\n{'=' * 45}")
     global_model = ModelClass(input_dim, num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
+
+    if class_weighted:
+        weights = class_weights_from(clients, num_classes).to(device)
+        criterion = nn.CrossEntropyLoss(weight=weights)
+        print(f"  Class-weighted loss: min={weights.min():.3f} "
+              f"max={weights.max():.3f}")
+    else:
+        criterion = nn.CrossEntropyLoss()
     history = []
 
     # Only weight matrices are snapped back to their target precision
@@ -220,7 +249,11 @@ def federated_training(model_name, clients, X_test, y_test,
             torch.save(global_model.state_dict(),
                        os.path.join(OUT_DIR, f"{model_name}_checkpoint.pt"))
 
-    tag = f"{model_name}_seed{seed}" if seed is not None else model_name
+    tag = model_name
+    if class_weighted:
+        tag += "_cw"
+    if seed is not None:
+        tag += f"_seed{seed}"
     torch.save(global_model.state_dict(),
                os.path.join(OUT_DIR, f"{tag}_final.pt"))
     with open(os.path.join(OUT_DIR, f"{tag}_history.pkl"), "wb") as f:
@@ -242,6 +275,9 @@ def main():
     parser.add_argument("--seed", type=int, default=SEED,
                         help="seed for the client split and weight init; "
                              "vary it to obtain error bars")
+    parser.add_argument("--class-weighted", action="store_true",
+                        help="weight the loss by inverse class frequency, "
+                             "to raise recall on the rare attack classes")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -258,7 +294,7 @@ def main():
     federated_training(args.model, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=args.rounds, epochs=args.epochs, lr=args.lr,
-                       seed=args.seed)
+                       seed=args.seed, class_weighted=args.class_weighted)
 
 
 if __name__ == "__main__":
