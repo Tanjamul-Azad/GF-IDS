@@ -195,12 +195,24 @@ def class_weights_from(clients, num_classes):
     return weights * (num_classes / weights.sum())
 
 
+def run_tag(model_name, class_weighted=False, seed=None):
+    """Filename stem identifying one run, so variants never collide."""
+    tag = model_name
+    if class_weighted:
+        tag += "_cw"
+    if seed is not None:
+        tag += f"_seed{seed}"
+    return tag
+
+
 def federated_training(model_name, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=ROUNDS, epochs=LOCAL_EPOCHS,
                        lr=LEARNING_RATE, rebinarize=True, seed=None,
-                       class_weighted=False):
+                       class_weighted=False, resume=False):
     ModelClass = MODEL_REGISTRY[model_name]
+    tag = run_tag(model_name, class_weighted, seed)
+    ckpt_path = os.path.join(OUT_DIR, f"{tag}_checkpoint.pt")
 
     print(f"\n{'=' * 45}\n  Training: {model_name}\n{'=' * 45}")
     global_model = ModelClass(input_dim, num_classes).to(device)
@@ -212,7 +224,26 @@ def federated_training(model_name, clients, X_test, y_test,
               f"max={weights.max():.3f}")
     else:
         criterion = nn.CrossEntropyLoss()
+
+    # Resume from the last completed round if a checkpoint is there.
+    # A resumed run is not bit-identical to an uninterrupted one, since
+    # the data loader shuffling picks up from a fresh RNG state rather
+    # than the one it would have had. The client partition and the
+    # weights are exact, so the comparison between models still holds,
+    # but a run used for a reproducibility claim should be one that
+    # finished in a single session.
     history = []
+    start_round = 0
+    if resume and os.path.exists(ckpt_path):
+        ckpt = torch.load(ckpt_path, map_location=device)
+        global_model.load_state_dict(ckpt["model_state"])
+        history = ckpt["history"]
+        start_round = ckpt["round"]
+        if start_round < rounds:
+            print(f"  Resuming from round {start_round + 1} "
+                  f"({ckpt_path})")
+    elif resume:
+        print(f"  No checkpoint at {ckpt_path}, starting from round 1")
 
     # Only weight matrices are snapped back to their target precision
     # after aggregation; biases and BatchNorm parameters stay full
@@ -225,7 +256,11 @@ def federated_training(model_name, clients, X_test, y_test,
         print(f"  Re-quantizing after aggregation: "
               f"{sorted(requant_keys)}")
 
-    for t in range(rounds):
+    if start_round >= rounds:
+        print(f"  Already complete ({start_round}/{rounds} rounds)")
+        return global_model, history
+
+    for t in range(start_round, rounds):
         local_states, local_sizes = [], []
 
         for client in clients:
@@ -245,15 +280,16 @@ def federated_training(model_name, clients, X_test, y_test,
         history.append({"round": t + 1, "accuracy": acc})
         print(f"  Round {t + 1:2d}/{rounds} - Accuracy: {acc:.4f}")
 
-        if (t + 1) % 5 == 0:
-            torch.save(global_model.state_dict(),
-                       os.path.join(OUT_DIR, f"{model_name}_checkpoint.pt"))
+        # Checkpoint every round rather than every fifth. These models
+        # are a few hundred KB, so the write costs almost nothing next
+        # to a round of training, and it means a session that dies
+        # loses at most one round instead of up to five.
+        torch.save({"model_state": global_model.state_dict(),
+                    "history": history,
+                    "round": t + 1,
+                    "model_name": model_name,
+                    "seed": seed}, ckpt_path)
 
-    tag = model_name
-    if class_weighted:
-        tag += "_cw"
-    if seed is not None:
-        tag += f"_seed{seed}"
     torch.save(global_model.state_dict(),
                os.path.join(OUT_DIR, f"{tag}_final.pt"))
     with open(os.path.join(OUT_DIR, f"{tag}_history.pkl"), "wb") as f:
@@ -278,6 +314,9 @@ def main():
     parser.add_argument("--class-weighted", action="store_true",
                         help="weight the loss by inverse class frequency, "
                              "to raise recall on the rare attack classes")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue from the last completed round if a "
+                             "checkpoint for this run exists")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -294,7 +333,8 @@ def main():
     federated_training(args.model, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=args.rounds, epochs=args.epochs, lr=args.lr,
-                       seed=args.seed, class_weighted=args.class_weighted)
+                       seed=args.seed, class_weighted=args.class_weighted,
+                       resume=args.resume)
 
 
 if __name__ == "__main__":
