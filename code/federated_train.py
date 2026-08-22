@@ -129,6 +129,53 @@ def evaluate(model, X, y, batch_size=1024):
     return correct / total
 
 
+@torch.no_grad()
+def evaluate_loss(model, X, y, criterion, batch_size=1024):
+    """Mean loss of the global model on the held-out test set.
+
+    Used only for the convergence check (paper Eq. 8:
+    |L^{t+1} - L^t| < delta). Evaluated post-aggregation, at the same
+    point accuracy is measured, so it reflects the model actually
+    distributed to clients rather than any one client's local loss.
+    """
+    model.eval()
+    loader = DataLoader(
+        TensorDataset(torch.FloatTensor(X), torch.LongTensor(y)),
+        batch_size=batch_size)
+    total_loss = total_n = 0.0
+    for X_b, y_b in loader:
+        X_b, y_b = X_b.to(device), y_b.to(device)
+        loss = criterion(model(X_b), y_b)
+        total_loss += loss.item() * len(y_b)
+        total_n += len(y_b)
+    return total_loss / total_n
+
+
+def has_converged(history, delta, patience, min_rounds):
+    """Eq. 8, made robust to a single noisy round.
+
+    Stops only once |L^{t+1} - L^t| < delta holds for `patience`
+    consecutive round-pairs, and never before `min_rounds`. A
+    single-round check would trigger on a coincidence; round-to-round
+    accuracy in these runs swings by double digits well past round 30
+    (e.g. BNN dips to 92% at rounds 41 and 43 between runs above 97%),
+    so a lone small loss delta is not enough evidence of convergence.
+
+    Returns False, safely, if any round in the checked window predates
+    this function's introduction and has no recorded loss - this lets
+    a resumed run fall back to running the full round budget instead
+    of crashing or false-triggering on missing data.
+    """
+    if len(history) < max(min_rounds, patience + 1):
+        return False
+    recent = history[-(patience + 1):]
+    losses = [h.get("loss") for h in recent]
+    if any(v is None for v in losses):
+        return False
+    deltas = [abs(losses[i + 1] - losses[i]) for i in range(len(losses) - 1)]
+    return all(d < delta for d in deltas)
+
+
 def fedavg(local_states, local_sizes, rebinarize_keys=None,
            requantize_keys=None):
     """Sample-count-weighted average, with optional re-binarization.
@@ -209,7 +256,8 @@ def federated_training(model_name, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=ROUNDS, epochs=LOCAL_EPOCHS,
                        lr=LEARNING_RATE, rebinarize=True, seed=None,
-                       class_weighted=False, resume=False):
+                       class_weighted=False, resume=False,
+                       delta=0.001, patience=5, min_rounds=15):
     ModelClass = MODEL_REGISTRY[model_name]
     tag = run_tag(model_name, class_weighted, seed)
     ckpt_path = os.path.join(OUT_DIR, f"{tag}_checkpoint.pt")
@@ -277,8 +325,10 @@ def federated_training(model_name, clients, X_test, y_test,
             fedavg(local_states, local_sizes, rebin_keys, requant_keys))
 
         acc = evaluate(global_model, X_test, y_test)
-        history.append({"round": t + 1, "accuracy": acc})
-        print(f"  Round {t + 1:2d}/{rounds} - Accuracy: {acc:.4f}")
+        loss_val = evaluate_loss(global_model, X_test, y_test, criterion)
+        history.append({"round": t + 1, "accuracy": acc, "loss": loss_val})
+        print(f"  Round {t + 1:2d}/{rounds} - Accuracy: {acc:.4f}  "
+              f"Loss: {loss_val:.4f}")
 
         # Checkpoint every round rather than every fifth. These models
         # are a few hundred KB, so the write costs almost nothing next
@@ -290,14 +340,28 @@ def federated_training(model_name, clients, X_test, y_test,
                     "model_name": model_name,
                     "seed": seed}, ckpt_path)
 
+        # Eq. 8: stop once the global loss has settled, rather than
+        # always running the full round budget. Every model uses this
+        # same rule (same delta, same patience), so the fairness of
+        # the comparison rests on a shared, principled stopping
+        # criterion instead of on an arbitrarily chosen fixed T.
+        if has_converged(history, delta, patience, min_rounds):
+            print(f"  Converged: |loss delta| < {delta} held for "
+                  f"{patience} consecutive rounds. "
+                  f"Stopping at round {t + 1}/{rounds}.")
+            break
+
     torch.save(global_model.state_dict(),
                os.path.join(OUT_DIR, f"{tag}_final.pt"))
     with open(os.path.join(OUT_DIR, f"{tag}_history.pkl"), "wb") as f:
         pickle.dump(history, f)
 
     best = max(history, key=lambda h: h["accuracy"])
+    stopped_early = history[-1]["round"] < rounds
     print(f"\n  Best:  Round {best['round']} - {best['accuracy'] * 100:.2f}%")
-    print(f"  Final: Round {rounds} - {history[-1]['accuracy'] * 100:.2f}%")
+    print(f"  Final: Round {history[-1]['round']} - "
+          f"{history[-1]['accuracy'] * 100:.2f}%"
+          f"{'  (converged early)' if stopped_early else ''}")
     return global_model, history
 
 
@@ -317,6 +381,29 @@ def main():
     parser.add_argument("--resume", action="store_true",
                         help="continue from the last completed round if a "
                              "checkpoint for this run exists")
+    parser.add_argument("--early-stop", action="store_true",
+                        help="enable Eq. 8 loss-convergence stopping "
+                             "instead of always running the full "
+                             "--rounds budget. OFF by default: the BNN "
+                             "diagnostic run showed a long noisy plateau "
+                             "at 83-93%% (rounds 21-32) before the real "
+                             "breakthrough to 97%%+ at round 36+, so an "
+                             "adaptive stopper risks quitting on a false "
+                             "plateau. The fixed budget determined by "
+                             "that diagnostic run (T=45, applied "
+                             "identically to every model) is the "
+                             "validated, safe default; use --early-stop "
+                             "only for exploration, not for numbers that "
+                             "go in the paper.")
+    parser.add_argument("--delta", type=float, default=0.001,
+                        help="Eq. 8 convergence threshold on the global "
+                             "test loss, only used with --early-stop")
+    parser.add_argument("--patience", type=int, default=5,
+                        help="consecutive rounds the delta must hold for "
+                             "before stopping, only used with --early-stop")
+    parser.add_argument("--min-rounds", type=int, default=15,
+                        help="never stop before this many rounds, only "
+                             "used with --early-stop")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -329,12 +416,19 @@ def main():
     print(f"Device: {device}, INPUT_DIM={input_dim}, "
           f"NUM_CLASSES={num_classes}")
 
+    # -1 as delta can never be beaten by an absolute loss difference
+    # (which is always >= 0), so this is what makes has_converged()
+    # a no-op when --early-stop was not passed, without needing a
+    # second code path.
+    delta = args.delta if args.early_stop else -1.0
+
     clients = split_clients(X_train, y_train)
     federated_training(args.model, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=args.rounds, epochs=args.epochs, lr=args.lr,
                        seed=args.seed, class_weighted=args.class_weighted,
-                       resume=args.resume)
+                       resume=args.resume, delta=delta,
+                       patience=args.patience, min_rounds=args.min_rounds)
 
 
 if __name__ == "__main__":
