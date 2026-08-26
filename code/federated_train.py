@@ -257,7 +257,8 @@ def federated_training(model_name, clients, X_test, y_test,
                        rounds=ROUNDS, epochs=LOCAL_EPOCHS,
                        lr=LEARNING_RATE, rebinarize=True, seed=None,
                        class_weighted=False, resume=False,
-                       delta=0.001, patience=5, min_rounds=15):
+                       delta=0.001, patience=5, min_rounds=15,
+                       lr_decay=1.0, lr_min=1e-6):
     ModelClass = MODEL_REGISTRY[model_name]
     tag = run_tag(model_name, class_weighted, seed)
     ckpt_path = os.path.join(OUT_DIR, f"{tag}_checkpoint.pt")
@@ -309,13 +310,21 @@ def federated_training(model_name, clients, X_test, y_test,
         return global_model, history
 
     for t in range(start_round, rounds):
+        # Exponential decay of the local learning rate, round by round.
+        # lr_decay=1.0 (the default) makes this a no-op, exactly
+        # reproducing the constant-lr behaviour every existing run used.
+        # The paper's own Limitations names this as the fix for the
+        # Adam-momentum/FedAvg instability seen in the T=45 runs; this
+        # is that fix, made real rather than just described.
+        round_lr = max(lr_min, lr * (lr_decay ** t))
         local_states, local_sizes = [], []
 
         for client in clients:
             local_model = ModelClass(input_dim, num_classes).to(device)
             local_model.load_state_dict(
                 copy.deepcopy(global_model.state_dict()))
-            optimizer = torch.optim.Adam(local_model.parameters(), lr=lr)
+            optimizer = torch.optim.Adam(local_model.parameters(),
+                                         lr=round_lr)
             loader = get_loader(client["X_train"], client["y_train"])
             train_one_round(local_model, loader, optimizer, criterion, epochs)
             local_states.append(copy.deepcopy(local_model.state_dict()))
@@ -326,9 +335,11 @@ def federated_training(model_name, clients, X_test, y_test,
 
         acc = evaluate(global_model, X_test, y_test)
         loss_val = evaluate_loss(global_model, X_test, y_test, criterion)
-        history.append({"round": t + 1, "accuracy": acc, "loss": loss_val})
+        history.append({"round": t + 1, "accuracy": acc, "loss": loss_val,
+                        "lr": round_lr})
+        lr_note = f"  lr={round_lr:.2e}" if lr_decay != 1.0 else ""
         print(f"  Round {t + 1:2d}/{rounds} - Accuracy: {acc:.4f}  "
-              f"Loss: {loss_val:.4f}")
+              f"Loss: {loss_val:.4f}{lr_note}")
 
         # Checkpoint every round rather than every fifth. These models
         # are a few hundred KB, so the write costs almost nothing next
@@ -404,6 +415,25 @@ def main():
     parser.add_argument("--min-rounds", type=int, default=15,
                         help="never stop before this many rounds, only "
                              "used with --early-stop")
+    parser.add_argument("--lr-decay", type=float, default=1.0,
+                        help="multiply the local learning rate by this "
+                             "factor every round (e.g. 0.97). 1.0 (default) "
+                             "means constant lr, exactly reproducing every "
+                             "existing run's behaviour. This is what the "
+                             "paper's Limitations names as the fix for "
+                             "the round-to-round oscillation seen at "
+                             "T=45 (MLP's final-round accuracy of 63.53%% "
+                             "against a best of 95.86%% in the same run "
+                             "is the clearest example). Applying it to "
+                             "only some of the six models breaks the "
+                             "fair-comparison principle used throughout "
+                             "this project, so if you use it here, every "
+                             "model -- including BNN and MLP, already "
+                             "complete at T=45 -- needs to be rerun with "
+                             "the same decay for the comparison to hold.")
+    parser.add_argument("--lr-min", type=float, default=1e-6,
+                        help="floor for --lr-decay so the rate never "
+                             "reaches zero")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -428,7 +458,8 @@ def main():
                        rounds=args.rounds, epochs=args.epochs, lr=args.lr,
                        seed=args.seed, class_weighted=args.class_weighted,
                        resume=args.resume, delta=delta,
-                       patience=args.patience, min_rounds=args.min_rounds)
+                       patience=args.patience, min_rounds=args.min_rounds,
+                       lr_decay=args.lr_decay, lr_min=args.lr_min)
 
 
 if __name__ == "__main__":
