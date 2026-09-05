@@ -128,8 +128,11 @@ reported; check that output before quoting FLOPs.
 
 ## Status
 
-The manuscript is under review. Results, figures and manuscript text in this
-repository correspond to that submission and may change during revision.
+The manuscript is under review and this code is mid-revision. See
+[`docs/PROGRESS.md`](docs/PROGRESS.md) for current run status and results,
+and [`docs/RUN_RESULTS.md`](docs/RUN_RESULTS.md) for the full round-by-round
+log behind them. Figures and code in this repository correspond to that
+ongoing revision and will change as remaining runs complete.
 
 ## Citation
 
