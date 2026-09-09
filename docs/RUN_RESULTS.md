@@ -376,8 +376,95 @@ something once both sides are measured.
 
 ---
 
-## Pending
+## BNN-INT8IO, seed 42, T=45 — the sixth and last model, all runs now complete
 
-- BNN diagnostic at longer T, to locate the plateau
-- BNN-INT8IO, MLP-INT8, MLP, CNN, LSTM at whatever T is settled on
-- Optional: class-weighted variants, extra seeds
+Run 2026-09-09, GPU, across three sessions (resumed at rounds 11, 35 —
+both continuous).
+
+**Best: round 39, 88.02% (loss 0.362, the lowest loss in the run — the
+two agree, same as they did for MLP-INT8's best round). Final: round
+45, 86.69%.**
+
+### This overturns the hypothesis written into this file and into
+### main.tex's Section V.C — say so plainly, do not quietly drop it
+
+The earlier entry for MLP-INT8 reasoned that BNN-INT8IO should hold
+close to plain BNN-FL's 97.68%, because it only quantizes the two
+Float32 layers while leaving the already-stable binary hidden layers
+untouched, unlike MLP-INT8 which quantizes everything. That reasoning
+was wrong. BNN-INT8IO's best accuracy (88.02%) is nearly identical to
+MLP-INT8's (87.85%), a difference of 0.17 points, and both sit roughly
+10 points below plain BNN-FL.
+
+The loss trace rules out the obvious alternative explanation. BNN-INT8IO
+trains far more smoothly than MLP-INT8 did: its loss stays inside
+0.36-0.65 for the entire run and never spikes into the double digits the
+way MLP-INT8's did (round 43: 11.75). So this is not the same kind of
+optimizer instability seen in MLP-INT8 and, less severely, in every
+float32 model past its peak round. BNN-INT8IO converges cleanly to a
+ceiling around 86-88% and stays there. The accuracy loss looks
+structural, not a training-stability artifact: quantizing the input
+layer to 8 bits costs real information before the network has extracted
+any features from it, and 8 bits is evidently not enough to avoid that
+cost here even though it preserves far more resolution than 1 bit would.
+
+### What this changes about the design's central claim
+
+Two comparisons now have to be kept separate, because they say different
+things:
+
+**BNN-INT8IO vs. MLP-INT8** (same precision tier — both use 8-bit
+quantization somewhere): BNN-INT8IO wins. 13.23 KB against 18.98 KB per
+round, 30.3% less, at accuracy that is a statistical tie (88.02% vs.
+87.85%). This is a genuinely defensible claim: *if* a deployment is
+going to accept int8-level accuracy, the hybrid design (binary hidden
+layers, int8 input/output) reaches that accuracy tier more cheaply than
+naively quantizing every layer.
+
+**BNN-INT8IO vs. the original hybrid BNN-FL** (Float32 input/output):
+BNN-INT8IO is not an improvement, it is a trade-off. It gives up roughly
+10 points of accuracy (97.68% to 88.02%) to save 53% of the payload
+(28.03 KB to 13.23 KB). Whether that trade is worth making depends on
+the deployment's priorities, and the paper should present it as a
+second option alongside the primary BNN-FL result, not as a strict
+replacement for it.
+
+This also retroactively justifies something the original design already
+did for a different stated reason. Section III.C keeps the input and
+output layers in Float32 specifically because binarizing them was
+expected to cost too much accuracy. This result shows the same is true,
+to a real if lesser degree, even at 8 bits — full precision on those two
+layers is doing more work than it looked like it was doing.
+
+### Standings — all six models, T=45, seed 42
+
+| Model | Best acc | Round | Final acc |
+|---|---:|---:|---:|
+| **BNN** | **97.68%** | 44 | 97.60% |
+| MLP | 95.86% | 23 | 63.53% |
+| LSTM | 95.47% | 13 | 86.41% |
+| CNN | 95.14% | 37 | 74.79% |
+| BNN-INT8IO | 88.02% | 39 | 86.69% |
+| MLP-INT8 | 87.85% | 29 | 71.87% |
+
+### What goes in Section V.C now
+
+Replace the `%TODO` placeholder with both numbers and both comparisons
+above. The honest framing is: BNN-FL (Float32 I/O) is the primary
+result at 97.68% best accuracy and 28.03 KB/round. BNN-INT8IO is offered
+as a lower-communication variant (13.23 KB/round, 30.3% less than the
+equivalent-accuracy MLP-INT8 baseline) for deployments that can accept
+roughly 88% accuracy in exchange for less than half the payload. It is
+not claimed to match BNN-FL's accuracy.
+
+---
+
+## All six models complete — remaining work moves to the paper
+
+All planned runs (BNN, MLP, CNN, LSTM, MLP-INT8, BNN-INT8IO) are done at
+the fixed T=45, seed=42 configuration and are directly comparable. What
+is left is writing the results into `main.tex` (Tables V, VI, VII, VIII)
+with these verified numbers, not further training.
+
+Optional, not yet decided: SignSGD aggregation ablation, class-weighted
+loss re-run, learning-rate decay re-run, multi-seed runs for error bars.

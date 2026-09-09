@@ -5,17 +5,14 @@ something changes; read this file first. Full round-by-round numbers and
 the reasoning behind each decision are in
 [`RUN_RESULTS.md`](RUN_RESULTS.md).
 
-**Last updated: 2026-09-06.**
+**Last updated: 2026-09-09.**
 
 ## Status
 
-5 of 6 planned federated runs are complete, all at the same configuration
-(`T=45` rounds, `seed=42`) so they are directly comparable. The sixth,
-`BNN-INT8IO`, is in progress.
-
-```
-python federated_train.py --model BNN-INT8IO --seed 42 --rounds 45 --resume
-```
+All 6 of 6 planned federated runs are complete, all at the same
+configuration (`T=45` rounds, `seed=42`) so they are directly comparable.
+Remaining work is writing the verified numbers into the manuscript's
+results tables, not further training.
 
 ## Why T=45 and seed 42
 
@@ -36,8 +33,8 @@ model trains on the same data split.
 | MLP | 95.86% | 23 | 63.53% |
 | LSTM | 95.47% | 13 | 86.41% |
 | CNN | 95.14% | 37 | 74.79% |
+| BNN-INT8IO | 88.02% | 39 | 86.69% |
 | MLP-INT8 | 87.85% | 29 | 71.87% |
-| BNN-INT8IO | pending | — | — |
 
 Final-round accuracy varies too much between runs to use as a headline
 number (see `RUN_RESULTS.md` for why); best accuracy and a last-5-round
@@ -51,6 +48,11 @@ mean/std are the reported metrics going forward.
 | MLP-INT8 | 18.98 KB | 16,064 | — |
 | BNN (current design) | 28.03 KB | 5,952 | 26,624 |
 | BNN-INT8IO | 13.23 KB | 5,952 | 26,624 |
+
+BNN-INT8IO's payload is 30.3% smaller than MLP-INT8's at statistically
+tied accuracy (88.02% vs. 87.85%), but 53% smaller than plain BNN-FL at
+a real ~10-point accuracy cost (97.68% to 88.02%) — a genuine trade-off,
+not a free improvement. See `RUN_RESULTS.md` for the full analysis.
 
 ## What changed in the code, and why
 
@@ -78,8 +80,8 @@ and in `docs/EFFICIENCY_MEASUREMENT.md`. Summary:
 
 ## Open questions / next steps
 
-1. Finish `BNN-INT8IO`, then compare its accuracy against `MLP-INT8`'s
-   87.85% best — see `RUN_RESULTS.md` for what each outcome would mean.
+1. Write the six models' verified numbers into the manuscript's results
+   tables — the last step blocked on training data, now unblocked.
 2. `MLP`'s 95.86% best (this run) vs. 97.78% (an earlier, unseeded run)
    is a large enough gap to warrant multiple seeds before treating either
    number as final.
