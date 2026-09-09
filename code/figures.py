@@ -31,7 +31,8 @@ RUN_DIR = "./runs/"
 FIG_DIR = "./figures/"
 
 COLORS = {"MLP": "#2196F3", "CNN": "#FF9800",
-          "LSTM": "#4CAF50", "BNN": "#D32F2F"}
+          "LSTM": "#4CAF50", "BNN": "#D32F2F",
+          "MLP-INT8": "#9C27B0", "BNN-INT8IO": "#795548"}
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -125,7 +126,8 @@ def fig_convergence(histories):
     ax.set_ylabel("Accuracy (%)", fontsize=11)
     ax.set_title("Federated Learning Convergence - CICIoT2023",
                  fontsize=12, fontweight="bold")
-    ax.set_xticks(range(1, 21))
+    max_round = max(h["round"] for hist in histories.values() for h in hist)
+    ax.set_xticks(range(1, max_round + 1, max(1, max_round // 20)))
     ax.legend(edgecolor="black")
     ax.grid(alpha=0.25, linestyle="--")
     _style_axes(ax)
@@ -287,13 +289,15 @@ def main():
 
     # Efficiency panels read from the results table written by
     # evaluate.py, so that figures and tables cannot drift apart.
-    results_csv = os.path.join(RUN_DIR, "results.csv")
+    results_csv = os.path.join(RUN_DIR, "results_best.csv")
+    if not os.path.exists(results_csv):
+        results_csv = os.path.join(RUN_DIR, "results_final.csv")
     if os.path.exists(results_csv):
         import pandas as pd
         df = pd.read_csv(results_csv).set_index("Model")
         flops = df["FLOPs(M)"].to_dict()
         params = df["Parameters"].to_dict()
-        payload = df["IdealPayload(KB)"].to_dict()
+        payload = df["PackedPayload(KB)"].to_dict()
         accuracy = df["Accuracy(%)"].to_dict()
         # 0.5 pJ per FLOP, expressed in nJ
         energy = {k: (v * 1e6) * 0.5 / 1000 for k, v in flops.items()}

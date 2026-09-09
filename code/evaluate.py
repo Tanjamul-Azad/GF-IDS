@@ -226,6 +226,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", nargs="+",
                         default=list(MODEL_REGISTRY.keys()))
+    parser.add_argument("--suffix", default="final", choices=["final", "best"],
+                        help="evaluate the last round's weights (_final.pt, "
+                             "written whenever training completes) or the "
+                             "best-accuracy round's weights (_best.pt, only "
+                             "present for runs made after federated_train.py "
+                             "started saving it separately)")
     args = parser.parse_args()
 
     X_test = np.load(os.path.join(DATA_DIR, "X_test.npy"))
@@ -235,7 +241,7 @@ def main():
 
     rows = []
     for name in args.models:
-        ckpt = os.path.join(RUN_DIR, f"{name}_final.pt")
+        ckpt = os.path.join(RUN_DIR, f"{name}_{args.suffix}.pt")
         if not os.path.exists(ckpt):
             print(f"Skipping {name}: {ckpt} not found")
             continue
@@ -257,9 +263,10 @@ def main():
         import pandas as pd
         df = pd.DataFrame(rows)
         os.makedirs(RUN_DIR, exist_ok=True)
-        df.to_csv(os.path.join(RUN_DIR, "results.csv"), index=False)
+        out_csv = os.path.join(RUN_DIR, f"results_{args.suffix}.csv")
+        df.to_csv(out_csv, index=False)
         print("\n" + df.to_string(index=False))
-        print(f"\nSaved to {os.path.join(RUN_DIR, 'results.csv')}")
+        print(f"\nSaved to {out_csv}")
 
 
 if __name__ == "__main__":

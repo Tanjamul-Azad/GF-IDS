@@ -309,6 +309,10 @@ def federated_training(model_name, clients, X_test, y_test,
         print(f"  Already complete ({start_round}/{rounds} rounds)")
         return global_model, history
 
+    # Recomputed from the loaded history on resume, so a resumed run
+    # tracks the correct running best instead of starting over at -1.
+    best_acc_so_far = max((h["accuracy"] for h in history), default=-1.0)
+
     for t in range(start_round, rounds):
         # Exponential decay of the local learning rate, round by round.
         # lr_decay=1.0 (the default) makes this a no-op, exactly
@@ -340,6 +344,17 @@ def federated_training(model_name, clients, X_test, y_test,
         lr_note = f"  lr={round_lr:.2e}" if lr_decay != 1.0 else ""
         print(f"  Round {t + 1:2d}/{rounds} - Accuracy: {acc:.4f}  "
               f"Loss: {loss_val:.4f}{lr_note}")
+
+        # Save the weights at the best-accuracy round separately, since
+        # the resumable checkpoint below is overwritten every round and
+        # only the last round's weights would otherwise survive to the
+        # end of training. Without this, computing security metrics
+        # (F1/MCC/FPR/confusion matrix) at the "best accuracy" operating
+        # point reported in the paper is impossible after the fact.
+        if acc > best_acc_so_far:
+            best_acc_so_far = acc
+            torch.save(global_model.state_dict(),
+                       os.path.join(OUT_DIR, f"{tag}_best.pt"))
 
         # Checkpoint every round rather than every fifth. These models
         # are a few hundred KB, so the write costs almost nothing next
