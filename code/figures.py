@@ -24,11 +24,13 @@ from sklearn.metrics import auc, confusion_matrix, f1_score, roc_curve
 from sklearn.preprocessing import label_binarize
 from torch.utils.data import DataLoader, TensorDataset
 
+from federated_train import run_tag
 from models import MODEL_REGISTRY
 
 DATA_DIR = "./data/"
 RUN_DIR = "./runs/"
 FIG_DIR = "./figures/"
+SEED = 42
 
 COLORS = {"MLP": "#2196F3", "CNN": "#FF9800",
           "LSTM": "#4CAF50", "BNN": "#D32F2F",
@@ -45,10 +47,16 @@ def _style_axes(ax):
         spine.set_linewidth(1.0)
 
 
-def load_model(name, input_dim, num_classes):
+def load_model(name, input_dim, num_classes, seed=SEED, suffix="best"):
+    """Load one trained model.
+
+    Checkpoints are named by federated_train.run_tag(), so the seed has
+    to be part of the filename or nothing matches.
+    """
+    tag = run_tag(name, False, seed)
     model = MODEL_REGISTRY[name](input_dim, num_classes).to(device)
     model.load_state_dict(
-        torch.load(os.path.join(RUN_DIR, f"{name}_final.pt"),
+        torch.load(os.path.join(RUN_DIR, f"{tag}_{suffix}.pt"),
                    map_location=device))
     model.eval()
     return model
@@ -280,7 +288,7 @@ def main():
 
     histories = {}
     for name in MODEL_REGISTRY:
-        path = os.path.join(RUN_DIR, f"{name}_history.pkl")
+        path = os.path.join(RUN_DIR, f"{run_tag(name, False, SEED)}_history.pkl")
         if os.path.exists(path):
             with open(path, "rb") as f:
                 histories[name] = pickle.load(f)

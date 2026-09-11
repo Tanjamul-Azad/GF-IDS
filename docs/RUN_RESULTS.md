@@ -459,6 +459,105 @@ not claimed to match BNN-FL's accuracy.
 
 ---
 
+## LOCAL RERUN, RTX 4060, seed 42, T=45 — this is now the canonical set
+
+Run 2026-09-10/11 on the local RTX 4060 (torch 2.6.0+cu124), not Colab.
+Reason for the rerun: `federated_train.py` previously overwrote its
+checkpoint every round, so only the last round's weights survived and
+the security metrics (Macro F1 / MCC / FPR / confusion matrix) could
+not be computed at the best-accuracy operating point the paper
+reports. The code now writes `{tag}_best.pt` whenever a new best is
+found, so this rerun produces both.
+
+All six histories verified: 45 rounds each, contiguous, no gaps or
+repeats. Every `_best.pt` accuracy matches its run's own best-round
+history entry exactly, so the best-checkpoint mechanism is confirmed
+working.
+
+### Table V data — measured on the best-round checkpoint of each model
+
+| Model | Acc (%) | Best round | Macro F1 | Precision | Recall | MCC | FPR (%) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **BNN** | **97.30** | 38 | 0.5960 | 0.6366 | 0.5932 | **0.9704** | **0.08** |
+| LSTM | 96.22 | 11 | **0.6066** | **0.7064** | **0.6040** | 0.9588 | 0.12 |
+| MLP | 92.08 | 28 | 0.5748 | 0.6265 | 0.5770 | 0.9143 | 0.25 |
+| CNN | 89.18 | 30 | 0.5991 | 0.6974 | 0.5924 | 0.8830 | 0.35 |
+| BNN-INT8IO | 85.08 | 42 | 0.5413 | 0.5845 | 0.5365 | 0.8372 | 0.48 |
+| MLP-INT8 | 84.59 | 32 | 0.5432 | 0.5890 | 0.5492 | 0.8326 | 0.49 |
+
+### Table VII data — efficiency, architecture-derived
+
+| Model | Params | FLOPs (M) | BOPs (M) | IOPs (M) | Payload (KB) | Float32 payload (KB) | Inference (ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MLP | 15,938 | 0.0161 | — | — | 63.77 | 63.77 | 41.8 |
+| CNN | 84,962 | 0.4497 | — | — | 333.40 | 333.40 | 48.0 |
+| LSTM | 53,634 | 1.5983 | — | — | 209.51 | 209.51 | 48.9 |
+| MLP-INT8 | 15,938 | 0.0008 | — | 0.0153 | 18.98 | 63.77 | 57.1 |
+| **BNN** | 32,514 | 0.0060 | 0.0266 | — | 28.03 | 128.78 | 51.4 |
+| BNN-INT8IO | 32,514 | 0.0009 | 0.0266 | 0.0051 | 13.23 | 128.78 | 48.3 |
+
+### A second thop blind spot, found and fixed during this run
+
+`QuantLinear` subclasses `nn.Linear`, so `thop` skipped it exactly the
+way it skipped `BinaryLinear` before the original audit. MLP-INT8 was
+reporting 0.0008M operations against MLP's 0.0161M despite being the
+same architecture at a different precision. A handler is now
+registered for `QuantLinear` too, and 8-bit integer MACs are reported
+as a separate **IOPs** column rather than folded into FLOPs or BOPs.
+The check: MLP-INT8's 0.0008M float + 0.0153M int8 = 0.0161M, exactly
+matching float32 MLP's total, which is what an identical architecture
+at a different precision must produce. BNN-INT8IO likewise splits
+BNN's 0.0060M float into 0.0009M float + 0.0051M int8, the two
+input/output layers having moved to int8.
+
+### The finding that matters most: same seed, different results
+
+These numbers are **not** the same as the earlier Colab runs of the
+identical configuration (T=45, seed 42, same code logic):
+
+| Model | Colab run | Local rerun | Difference |
+|---|---:|---:|---:|
+| BNN | 97.68 (R44) | 97.30 (R38) | -0.38 |
+| LSTM | 95.47 (R13) | 96.22 (R11) | +0.75 |
+| MLP | 95.86 (R23) | 92.08 (R28) | **-3.78** |
+| CNN | 95.14 (R37) | 89.18 (R30) | **-5.96** |
+| BNN-INT8IO | 88.02 (R39) | 85.08 (R42) | -2.94 |
+| MLP-INT8 | 87.85 (R29) | 84.59 (R32) | -3.26 |
+
+Seeding `numpy` and `torch` does not make GPU training reproducible
+across different hardware and library versions: the Colab runs used a
+T4 with Colab's torch build, these used an RTX 4060 with torch
+2.6.0+cu124, cuDNN picks different kernels, and the `DataLoader`
+workers carry their own RNG state. `torch.backends.cudnn.deterministic`
+was never set either.
+
+**This is not a bug, and it is not something to hide — it is the
+strongest argument yet for the multi-seed requirement.** Two runs that
+differ only in hardware disagree by up to 5.96 points (CNN). Any
+single-seed claim in this paper, including the ordering of the three
+baselines, is therefore not trustworthy on its own, and a reviewer
+would be right to say so. Reporting mean ± std over several seeds is
+no longer a nice-to-have.
+
+**What survives unchanged:** BNN-FL still has the highest best accuracy
+of all six models, the highest MCC, and the lowest FPR, in both runs
+independently. That is the paper's central claim and it held up across
+a hardware change.
+
+**What changes:** the three float32 baselines no longer cluster
+tightly. In the Colab runs they sat at 95.1-95.9; here they spread
+across 89.18-96.22, and LSTM rather than MLP is the closest competitor.
+Any prose describing the baselines as "clustered" or naming MLP as the
+runner-up has to be rewritten against this set.
+
+**Decision needed:** the local set is the one to use going forward
+(it is the only one with best-round checkpoints and full security
+metrics), and the Colab numbers should be reported as what they are —
+an incidental reproducibility observation worth a sentence in
+Limitations, not deleted quietly.
+
+---
+
 ## All six models complete — remaining work moves to the paper
 
 All planned runs (BNN, MLP, CNN, LSTM, MLP-INT8, BNN-INT8IO) are done at

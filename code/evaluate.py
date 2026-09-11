@@ -48,8 +48,9 @@ from sklearn.metrics import (confusion_matrix, f1_score, matthews_corrcoef,
 from torch.utils.data import DataLoader, TensorDataset
 
 from binary_ops import BinaryLinear, binary_weight_keys
+from federated_train import run_tag
 from models import MODEL_REGISTRY
-from quant_ops import quant_weight_keys
+from quant_ops import QuantLinear, quant_weight_keys
 
 DATA_DIR = "./data/"
 RUN_DIR = "./runs/"
@@ -176,6 +177,21 @@ def count_binary_linear(module, x, y):
         [module.in_features * module.out_features])
 
 
+def count_quant_linear(module, x, y):
+    """thop handler for QuantLinear.
+
+    Exactly the same blind spot as BinaryLinear: QuantLinear subclasses
+    nn.Linear, thop dispatches on the exact type, so without this the
+    int8 layers contribute zero operations and MLP-INT8 appears to do
+    almost no work at all despite having the same architecture as MLP.
+
+    These are 8-bit integer multiply-accumulates, so they are reported
+    separately as IOPs rather than folded into either FLOPs or BOPs.
+    """
+    module.total_ops += torch.DoubleTensor(
+        [module.in_features * module.out_features])
+
+
 def efficiency_metrics(model, X_test, y_test, input_dim):
     params = sum(p.numel() for p in model.parameters())
 
@@ -191,15 +207,21 @@ def efficiency_metrics(model, X_test, y_test, input_dim):
         dummy = torch.randn(1, input_dim).to(device)
 
         total_ops, _ = profile(model, inputs=(dummy,), verbose=False,
-                               custom_ops={BinaryLinear: count_binary_linear})
-        # Binary layers alone, to separate BOPs from FLOPs.
+                               custom_ops={BinaryLinear: count_binary_linear,
+                                           QuantLinear: count_quant_linear})
+        # Split by precision so each tier is explicit: 1-bit XNOR/popcount
+        # (BOPs), 8-bit integer MACs (IOPs), and genuine float MACs.
         bops = sum(m.in_features * m.out_features
                    for m in model.modules()
                    if isinstance(m, BinaryLinear))
-        flops_m = round((total_ops - bops) / 1e6, 4)
+        iops = sum(m.in_features * m.out_features
+                   for m in model.modules()
+                   if isinstance(m, QuantLinear))
+        flops_m = round((total_ops - bops - iops) / 1e6, 4)
         bops_m = round(bops / 1e6, 4)
+        iops_m = round(iops / 1e6, 4)
     except ImportError:
-        flops_m = bops_m = None
+        flops_m = bops_m = iops_m = None
 
     # Wall-clock latency over a fixed 10k-sample slice.
     import time
@@ -216,6 +238,7 @@ def efficiency_metrics(model, X_test, y_test, input_dim):
     return {"Parameters": params,
             "FLOPs(M)": flops_m,
             "BOPs(M)": bops_m,
+            "IOPs(M)": iops_m,
             "PackedPayload(KB)": round(packed_kb, 2),
             "AnalyticPayload(KB)": round(analytic_kb, 2),
             "Float32Payload(KB)": round(float32_kb, 2),
@@ -232,7 +255,19 @@ def main():
                              "best-accuracy round's weights (_best.pt, only "
                              "present for runs made after federated_train.py "
                              "started saving it separately)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="seed of the run being evaluated. Checkpoints are "
+                             "named by run_tag(), i.e. "
+                             "{model}_seed{seed}_{suffix}.pt, so this has to "
+                             "match the seed the run was trained with. Pass a "
+                             "negative value for checkpoints written without "
+                             "any seed tag.")
+    parser.add_argument("--class-weighted", action="store_true",
+                        help="evaluate the class-weighted variant of the run "
+                             "({model}_cw_seed{seed}_{suffix}.pt)")
     args = parser.parse_args()
+
+    seed = None if args.seed < 0 else args.seed
 
     X_test = np.load(os.path.join(DATA_DIR, "X_test.npy"))
     y_test = np.load(os.path.join(DATA_DIR, "y_test.npy"))
@@ -241,7 +276,8 @@ def main():
 
     rows = []
     for name in args.models:
-        ckpt = os.path.join(RUN_DIR, f"{name}_{args.suffix}.pt")
+        tag = run_tag(name, args.class_weighted, seed)
+        ckpt = os.path.join(RUN_DIR, f"{tag}_{args.suffix}.pt")
         if not os.path.exists(ckpt):
             print(f"Skipping {name}: {ckpt} not found")
             continue
