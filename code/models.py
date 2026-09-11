@@ -193,6 +193,38 @@ class BNNInt8IOModel(nn.Module):
         return self.output_layer(x)
 
 
+class BNNFullModel(nn.Module):
+    """Every layer binarized, including the input and output layers.
+
+    The hybrid design keeps those two layers in Float32, following the
+    convention set by the original binarized network work. That choice
+    is usually defended by citation rather than measured. This variant
+    exists to measure it. It is identical to BNNModel apart from the
+    two interface layers being binary, so the gap between the two is
+    exactly what full precision on those layers is worth.
+    """
+
+    def __init__(self, input_dim, num_classes, binarize_activations=True):
+        super().__init__()
+        act = BinaryActivation if binarize_activations else nn.Hardtanh
+
+        self.input_layer = BinaryLinear(input_dim, 128)
+        self.hidden1 = nn.Sequential(
+            BinaryLinear(128, 128), nn.BatchNorm1d(128), act())
+        self.hidden2 = nn.Sequential(
+            BinaryLinear(128, 64), nn.BatchNorm1d(64), act())
+        self.hidden3 = nn.Sequential(
+            BinaryLinear(64, 32), nn.BatchNorm1d(32), act())
+        self.output_layer = BinaryLinear(32, num_classes)
+
+    def forward(self, x):
+        x = torch.relu(self.input_layer(x))
+        x = self.hidden1(x)
+        x = self.hidden2(x)
+        x = self.hidden3(x)
+        return self.output_layer(x)
+
+
 MODEL_REGISTRY = {
     "MLP": MLPModel,
     "CNN": CNNModel,
@@ -200,4 +232,5 @@ MODEL_REGISTRY = {
     "MLP-INT8": MLPInt8Model,
     "BNN": BNNModel,
     "BNN-INT8IO": BNNInt8IOModel,
+    "BNN-FULL": BNNFullModel,
 }

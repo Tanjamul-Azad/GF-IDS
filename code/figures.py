@@ -152,7 +152,7 @@ def fig_convergence(histories):
 
 
 def fig_perclass_f1(f1_a, f1_b, class_names, name_a="MLP", name_b="BNN"):
-    fig, ax = plt.subplots(figsize=(COL_DOUBLE, 2.9))
+    fig, ax = plt.subplots(figsize=(COL_DOUBLE, 3.4))
     x = np.arange(len(class_names))
     w = 0.4
     ax.bar(x - w / 2, f1_a, w, label=LABEL[name_a],
@@ -161,30 +161,67 @@ def fig_perclass_f1(f1_a, f1_b, class_names, name_a="MLP", name_b="BNN"):
            color=STYLE[name_b]["c"], edgecolor="black", linewidth=0.3,
            hatch="///")
     ax.set_xticks(x)
-    ax.set_xticklabels(class_names, rotation=90, fontsize=5.5)
+    ax.set_xticklabels([_short_class(c) for c in class_names],
+                       rotation=55, ha="right", fontsize=6)
     ax.set_ylabel("F1-score")
-    ax.set_ylim(0, 1.05)
-    ax.legend(edgecolor="black", framealpha=1.0, loc="upper left")
+    ax.set_ylim(0, 1.08)
+    ax.legend(edgecolor="black", framealpha=1.0, loc="lower left",
+              ncol=2, bbox_to_anchor=(0.0, 1.01))
     ax.grid(axis="y", alpha=0.25, linestyle="--", linewidth=0.5)
+    ax.margins(x=0.01)
     _style_axes(ax)
     fig.tight_layout()
     _save(fig, "fig_perclass_f1")
 
 
+def _short_class(name):
+    """Trim the CICIoT2023 label to something readable on an axis."""
+    return (name.replace("_Fragmentation", "-Frag")
+                .replace("_Flood", "")
+                .replace("_Malware", "")
+                .replace("Recon-", "Rec-")
+                .replace("Mirai-", "Mirai-")
+                .replace("_Spoofing", "-Spoof")
+                .replace("_Attack", "")
+                .replace("DictionaryBruteForce", "DictBruteForce")
+                .replace("VulnerabilityScan", "VulnScan")
+                .replace("HostDiscovery", "HostDisc"))
+
+
 def fig_roc(y_true, probs_a, probs_b, num_classes, name_a="MLP", name_b="BNN"):
+    """ROC with an inset, since both curves sit against the top left."""
     y_bin = label_binarize(y_true, classes=np.arange(num_classes))
-    fig, ax = plt.subplots(figsize=(COL_SINGLE, 2.8))
+    fig, ax = plt.subplots(figsize=(COL_SINGLE, 2.9))
+    curves = {}
     for probs, name in ((probs_a, name_a), (probs_b, name_b)):
         fpr, tpr, _ = roc_curve(y_bin.ravel(), probs.ravel())
+        curves[name] = (fpr, tpr)
         ax.plot(fpr, tpr, color=STYLE[name]["c"],
-                linestyle=STYLE[name]["ls"], linewidth=1.2,
+                linestyle=STYLE[name]["ls"], linewidth=1.3,
                 label=f"{LABEL[name]} (AUC = {auc(fpr, tpr):.4f})")
     ax.plot([0, 1], [0, 1], "k--", alpha=0.4, linewidth=0.8)
     ax.set_xlabel("False positive rate")
     ax.set_ylabel("True positive rate")
-    ax.legend(loc="lower right", edgecolor="black", framealpha=1.0)
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.02)
+    ax.legend(loc="lower right", edgecolor="black", framealpha=1.0,
+              fontsize=6.5)
     ax.grid(alpha=0.25, linestyle="--", linewidth=0.5)
     _style_axes(ax)
+
+    # The two curves only separate very near the corner, so magnify it.
+    inset = ax.inset_axes([0.30, 0.30, 0.44, 0.44])
+    for name, (fpr, tpr) in curves.items():
+        inset.plot(fpr, tpr, color=STYLE[name]["c"],
+                   linestyle=STYLE[name]["ls"], linewidth=1.2)
+    inset.set_xlim(0, 0.05)
+    inset.set_ylim(0.95, 1.001)
+    inset.set_xticks([0, 0.025, 0.05])
+    inset.set_yticks([0.95, 0.975, 1.0])
+    inset.tick_params(labelsize=5.5)
+    inset.grid(alpha=0.25, linestyle="--", linewidth=0.4)
+    inset.set_title("top-left region", fontsize=6, pad=2)
+    _style_axes(inset)
     fig.tight_layout()
     _save(fig, "fig_roc")
 
@@ -290,20 +327,33 @@ def fig_misclassification(preds, labels, class_names, top_n=10):
 
 
 def fig_pareto(accuracy, payload):
-    fig, ax = plt.subplots(figsize=(COL_SINGLE, 2.7))
+    # Hand-placed label offsets: several points sit close together and
+    # a single default offset makes them collide.
+    OFFSET = {"BNN": (8, 6), "BNN-INT8IO": (9, 3), "MLP": (8, 5),
+              "MLP-INT8": (9, -10), "CNN": (-6, -14), "LSTM": (-8, 8)}
+    fig, ax = plt.subplots(figsize=(COL_SINGLE, 2.9))
     for m in ORDER:
         if m not in accuracy or m not in payload:
             continue
         s = STYLE[m]
-        ax.scatter(payload[m], accuracy[m], s=90 if m == "BNN" else 45,
+        ax.scatter(payload[m], accuracy[m], s=95 if m == "BNN" else 50,
                    marker=s["m"], color=s["c"], edgecolor="black",
-                   linewidth=0.6, zorder=3, label=LABEL[m])
+                   linewidth=0.6, zorder=3)
         ax.annotate(LABEL[m].replace(" (proposed)", "").replace("-FL", ""),
                     (payload[m], accuracy[m]), textcoords="offset points",
-                    xytext=(5, 4), fontsize=6)
+                    xytext=OFFSET.get(m, (6, 4)), fontsize=6.5, zorder=4)
     ax.set_xscale("log")
+    ax.set_xlim(9, 620)
+    lo = min(accuracy.values())
+    hi = max(accuracy.values())
+    ax.set_ylim(lo - 2.5, hi + 2.5)
     ax.set_xlabel("Uplink payload per round (KB, log scale)")
     ax.set_ylabel("Best accuracy (%)")
+    ax.annotate("better", xy=(0.07, 0.93), xycoords="axes fraction",
+                fontsize=6.5, style="italic")
+    ax.annotate("", xy=(0.03, 0.97), xytext=(0.14, 0.90),
+                xycoords="axes fraction",
+                arrowprops=dict(arrowstyle="->", linewidth=0.8))
     ax.grid(alpha=0.25, linestyle="--", linewidth=0.5)
     _style_axes(ax)
     fig.tight_layout()
