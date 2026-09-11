@@ -225,6 +225,41 @@ class BNNFullModel(nn.Module):
         return self.output_layer(x)
 
 
+class BNNMatchedModel(nn.Module):
+    """Hybrid-precision BNN with the same topology as MLPModel.
+
+    BNNModel carries an extra 128 by 128 binarized layer that MLPModel
+    does not have. That one layer holds 16,384 of BNNModel's 31,680
+    weights, so the proposed model has roughly twice the capacity of
+    the baseline it is compared against. Any accuracy difference
+    between them is then a mixture of two effects, precision and
+    capacity, with no way to separate them.
+
+    This variant removes that layer. The weight matrices are then
+    31x128, 128x64, 64x32 and 32x34, exactly as in MLPModel, giving
+    15,296 weights in both. The only remaining difference between the
+    two models is that the hidden layers here are binary, which is
+    what the comparison is supposed to isolate.
+    """
+
+    def __init__(self, input_dim, num_classes, binarize_activations=True):
+        super().__init__()
+        act = BinaryActivation if binarize_activations else nn.Hardtanh
+
+        self.input_layer = nn.Linear(input_dim, 128)
+        self.hidden1 = nn.Sequential(
+            BinaryLinear(128, 64), nn.BatchNorm1d(64), act())
+        self.hidden2 = nn.Sequential(
+            BinaryLinear(64, 32), nn.BatchNorm1d(32), act())
+        self.output_layer = nn.Linear(32, num_classes)
+
+    def forward(self, x):
+        x = torch.relu(self.input_layer(x))
+        x = self.hidden1(x)
+        x = self.hidden2(x)
+        return self.output_layer(x)
+
+
 MODEL_REGISTRY = {
     "MLP": MLPModel,
     "CNN": CNNModel,
@@ -233,4 +268,5 @@ MODEL_REGISTRY = {
     "BNN": BNNModel,
     "BNN-INT8IO": BNNInt8IOModel,
     "BNN-FULL": BNNFullModel,
+    "BNN-MATCHED": BNNMatchedModel,
 }
