@@ -558,12 +558,144 @@ Limitations, not deleted quietly.
 
 ---
 
-## All six models complete — remaining work moves to the paper
+## BNN-MATCHED and BNN-FULL ablations, seed 42, T=45 — the capacity confound is resolved
 
-All planned runs (BNN, MLP, CNN, LSTM, MLP-INT8, BNN-INT8IO) are done at
-the fixed T=45, seed=42 configuration and are directly comparable. What
-is left is writing the results into `main.tex` (Tables V, VI, VII, VIII)
-with these verified numbers, not further training.
+Both trained locally on the RTX 4060, both complete at 45/45 rounds,
+contiguous histories, `_best.pt`/`_final.pt`/`_history.pkl` all present
+and verified.
+
+### Why these two runs exist
+
+Two problems were found while writing the algorithm block for the
+paper, not by running anything new — they came from reading the code
+against the manuscript's own claims.
+
+**The capacity confound.** `BNNModel` carries an extra 128x128
+binarized layer that `MLPModel` does not have. That single layer holds
+16,384 of BNN's 31,680 weights — 51.7% of the whole model. So every
+accuracy comparison in this paper up to now (BNN 97.30% vs MLP 92.08%)
+was between a model with roughly double the capacity and one with
+half, not a clean precision-only comparison. The layer was never
+documented in the original manuscript; it surfaced during the STE
+audit and was only added to Table 2 afterwards with no justification
+for why it exists. `BNN-MATCHED` removes it: weight matrices are
+31x128, 128x64, 64x32, 32x34, identical in shape to MLPModel, giving
+15,296 weight elements in both (15,746 total parameters including
+biases/BatchNorm, against MLP's 15,938).
+
+**The uplink is not binary.** Clients upload real-valued latent
+weights, not binary ones — `fedavg` must average in full precision,
+since averaging ±1 directly produces fractions that are neither valid
+binary weights nor meaningful magnitudes (confirmed empirically: a
+locally-trained hidden layer has ~3,942 distinct values before
+aggregation, the global re-binarized model has exactly 2). So the
+28.03 KB figure used everywhere so far is the **downlink** only. The
+real per-client **uplink** is 128.78 KB (the full float32 state dict),
+making the round trip 156.81 KB against MLP's 127.54 KB — BNN sends
+**22.9% more**, not less, once both directions are counted. Every
+figure/table/prose instance saying "uplink payload" for the 28.03 KB
+number is wrong and needs correcting to "downlink" or "per-round
+payload" (ambiguous, avoid).
+
+An int8-uplink transport fix was considered and explicitly rejected:
+it's a generic trick any model can use, so applying it only to BNN
+would recreate the exact naming-bias bug the original STE audit found
+(only BNN's layers were named in a way the old payload formula
+recognized). BNN-MATCHED fixes the uplink problem as a side effect of
+fixing the capacity problem, with no transport trick needed.
+
+### Results
+
+| Model | Best acc (%) | Round | MCC | FPR (%) | Params | Downlink (KB) | Uplink f32 (KB) | Round-trip (KB) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **BNN-MATCHED** | **97.75** | 38 | **0.9754** | **0.07** | **15,746** | 23.52 | 62.27 | **85.79** |
+| BNN (current) | 97.30 | 38 | 0.9704 | 0.08 | 32,514 | 28.03 | 128.78 | 156.81 |
+| LSTM | 96.22 | 11 | 0.9588 | 0.12 | 53,634 | 209.51 | 209.51 | 419.02 |
+| MLP | 92.08 | 28 | 0.9143 | 0.25 | 15,938 | 63.77 | 63.77 | 127.54 |
+| CNN | 89.18 | 30 | 0.8830 | 0.35 | 84,962 | 333.40 | 333.40 | 666.80 |
+| BNN-INT8IO | 85.08 | 42 | 0.8372 | 0.48 | 32,514 | 13.23 | 128.78 | 142.01 |
+| MLP-INT8 | 84.59 | 32 | 0.8326 | 0.49 | 15,938 | 18.98 | 63.77 | 82.75 |
+| **BNN-FULL** | **71.08** | 31 | 0.6959 | 0.93 | 32,514 | 8.90 | 128.78 | 137.68 |
+
+BNN-MATCHED full history: last5 mean 94.60%, std 4.88; final round
+96.30%. Energy (Horowitz 45nm pricing, same method as the rest of the
+paper): BNN-MATCHED 25.15 nJ, BNN-FULL 5.09 nJ (cheap because it is
+almost entirely binary ops, which are priced at 0.03 pJ), against
+BNN's 28.40 nJ and MLP's 74.06 nJ.
+
+Cost-to-readiness (round-trip KB, K=5 clients):
+- To 85% accuracy: BNN-MATCHED round 11 (4.61 MB), MLP round 7 (4.36
+  MB), BNN round 9 (6.89 MB), LSTM round 5 (10.23 MB), CNN round 14
+  (45.58 MB)
+- To 90%: BNN-MATCHED round 13 (5.45 MB), BNN round 17 (13.02 MB), MLP
+  round 28 (17.44 MB), LSTM round 5 (10.23 MB, already past 90 by
+  round 5), CNN not reached
+
+Note MLP is now marginally cheaper than BNN-MATCHED to reach 85% on a
+*round-trip* basis (4.36 vs 4.61 MB) because MLP needs fewer rounds (7
+vs 11), even though BNN-MATCHED's per-round cost is lower — but
+BNN-MATCHED pulls ahead by 90% (5.45 vs 17.44 MB) because MLP needs a
+lot more rounds to close that gap. This has to be stated honestly, not
+smoothed over: on a strict round-trip basis, "cheapest to a working
+model" now depends on which accuracy threshold counts as "working."
+The downlink-only comparison (what the original 28.03 KB claims were
+built on) still favors BNN-MATCHED unambiguously at every threshold.
+
+### What this settles
+
+BNN-FULL's collapse to 71.08% — and specifically its trajectory,
+climbing normally through round ~10 then going completely flat at
+70.99–71.08% for 21 straight rounds — is a clean confirmation that
+keeping the input/output layers in Float32 is load-bearing, not just
+citation-justified. Binarizing those two layers does not degrade
+gracefully; it caps learning entirely. This is the strongest, most
+direct evidence in the paper for the hybrid-precision design choice,
+and it was previously asserted on citation alone.
+
+BNN-MATCHED **beats plain BNN** on every headline metric — accuracy,
+MCC, FPR — while using half the parameters and a smaller downlink.
+This is the opposite of a disappointing ablation: it means the extra
+128x128 layer was not just an uncontrolled confound, it was actively
+unhelpful. The honest framing for the paper is that **BNN-MATCHED,
+not the original BNN, should be the primary proposed model going
+forward**, since it is simultaneously the most accurate, the cheapest,
+and the one whose comparison to MLP is actually fair. The original BNN
+architecture (with the extra layer) should be kept in the paper only
+as a secondary variant showing that adding capacity does not help
+once precision is already controlled for.
+
+### What still needs doing before this goes in main.tex
+
+1. Rename "uplink" to "downlink" (or "per-round payload") everywhere
+   it currently mislabels the 28.03/23.52/etc. KB figures — this is a
+   correctness fix, not a style change.
+2. Decide whether BNN-MATCHED replaces BNN as "BNN-FL (Proposed)" in
+   every table/figure, or is added as a seventh model alongside the
+   existing six. Recommendation: replace, and demote the old BNN to an
+   ablation row, since presenting a worse, confounded model as the
+   headline while a better, cleaner one sits in an appendix would be
+   indefensible if a reviewer notices.
+3. Regenerate all figures (`figures.py`) with BNN-MATCHED as the
+   primary series and BNN/BNN-FULL as ablation entries.
+4. Add the ablation section to main.tex: state the capacity confound,
+   report BNN-FULL and BNN-MATCHED side by side with the current BNN,
+   and update the abstract/contributions/conclusion numbers to
+   BNN-MATCHED's 97.75%/0.9754/0.07%.
+5. Update the architecture table (Table 2) and Fig. 1 (`final dig.pdf`)
+   to show the matched 4-layer architecture as primary.
+6. `evaluate.py`'s `--models` default list and `figures.py`'s `ORDER`/
+   `STYLE`/`LABEL` dicts need `BNN-MATCHED` and `BNN-FULL` added
+   (currently only accept them via explicit `--models` override).
+
+---
+
+## All eight models complete — remaining work moves to the paper
+
+All planned runs (BNN, MLP, CNN, LSTM, MLP-INT8, BNN-INT8IO,
+BNN-MATCHED, BNN-FULL) are done at the fixed T=45, seed=42
+configuration on the same RTX 4060 and are directly comparable. What
+is left is writing the results into `main.tex`, including the
+ablation section above, not further training.
 
 Optional, not yet decided: SignSGD aggregation ablation, class-weighted
 loss re-run, learning-rate decay re-run, multi-seed runs for error bars.
