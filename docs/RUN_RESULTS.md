@@ -664,28 +664,56 @@ architecture (with the extra layer) should be kept in the paper only
 as a secondary variant showing that adding capacity does not help
 once precision is already controlled for.
 
-### What still needs doing before this goes in main.tex
+### DONE (2026-09-15/16) — all six items below completed in main.tex
 
-1. Rename "uplink" to "downlink" (or "per-round payload") everywhere
-   it currently mislabels the 28.03/23.52/etc. KB figures — this is a
-   correctness fix, not a style change.
-2. Decide whether BNN-MATCHED replaces BNN as "BNN-FL (Proposed)" in
-   every table/figure, or is added as a seventh model alongside the
-   existing six. Recommendation: replace, and demote the old BNN to an
-   ablation row, since presenting a worse, confounded model as the
-   headline while a better, cleaner one sits in an appendix would be
-   indefensible if a reviewer notices.
-3. Regenerate all figures (`figures.py`) with BNN-MATCHED as the
-   primary series and BNN/BNN-FULL as ablation entries.
-4. Add the ablation section to main.tex: state the capacity confound,
-   report BNN-FULL and BNN-MATCHED side by side with the current BNN,
-   and update the abstract/contributions/conclusion numbers to
-   BNN-MATCHED's 97.75%/0.9754/0.07%.
-5. Update the architecture table (Table 2) and Fig. 1 (`final dig.pdf`)
-   to show the matched 4-layer architecture as primary.
-6. `evaluate.py`'s `--models` default list and `figures.py`'s `ORDER`/
-   `STYLE`/`LABEL` dicts need `BNN-MATCHED` and `BNN-FULL` added
-   (currently only accept them via explicit `--models` override).
+1. [x] "Uplink" renamed to "downlink" everywhere it mislabeled the KB
+   figures. Table VII was split into two tables: "Per-Inference
+   Operations and Energy" (compute only) and "Per-Round Communication,
+   Both Directions" (`tab:comm`, downlink/uplink/round-trip columns).
+2. [x] BNN-MATCHED replaced the original BNN as "BNN-FL (Proposed)"
+   throughout — abstract, contributions, Table V, Table VI, Table VII,
+   Table IX (cost-to-readiness), per-class/ROC/misclassification
+   prose, Limitations, Conclusion. The original BNN is demoted to
+   "BNN-FL (extra layer)" in the new ablation section only.
+3. [x] All figures regenerated with `ORDER = ["BNN-MATCHED", "MLP",
+   "LSTM", "CNN", "BNN-INT8IO", "MLP-INT8"]` as the primary series and
+   a new `ABLATION_ORDER`/`fig_ablation()` for BNN vs BNN-MATCHED vs
+   BNN-FULL. Two rename-era bugs found and fixed while doing this:
+   `fig_pareto`'s `OFFSET` dict and marker-size check were still keyed
+   on the old `"BNN"` string (so BNN-MATCHED silently lost its
+   hand-tuned label position), and every "Uplink payload" axis label
+   was actually plotting downlink data.
+4. [x] New subsection added: "Ablation Study: Isolating Capacity and
+   Full Binarization" (`sec:ablation`), placed right after Security
+   Performance Comparison. Table VI (ablation) + Fig. 4 report BNN vs
+   BNN-MATCHED vs BNN-FULL side by side. Abstract/contributions/
+   conclusion updated to BNN-MATCHED's 97.75%/0.9754/0.07%.
+5. [x] Table II (architecture) rewritten to show the matched 4-layer
+   design as primary, with a paragraph explaining the extra layer was
+   removed and pointing to the ablation section. Fig. 1
+   (`final dig.pdf`) did NOT need replacing — it shows a generic
+   "Hidden Layer (Binary)" box, not layer-specific shapes, so it is
+   still accurate. It does still say "Rounds (T): e.g., 20" (stale,
+   cosmetic) — this is a designed graphic with no source file
+   available in this session, so it needs fixing by hand in whatever
+   tool made it (Canva-style), not something fixable from LaTeX.
+6. [x] `figures.py`'s `ORDER`/`STYLE`/`LABEL`/`ABLATION_ORDER` updated.
+   `evaluate.py`'s `--models` default already covered every registered
+   model automatically, no change needed there.
+
+### One finding this pass surfaced that is NOT yet fixed
+
+`BNN-INT8IO` was trained before the capacity confound was found and
+still carries the original unmatched (32,514-parameter) architecture.
+Its downlink is genuinely smaller than MLP-INT8's, but once the uplink
+is counted (128.78 KB, the full unmatched Float32 size), its round
+trip is 142.01 KB against MLP-INT8's 82.75 KB — 71.6% MORE, not less.
+main.tex's Section V.F (int8 comparison) has been rewritten to state
+this honestly: BNN-INT8IO cannot currently be recommended over
+MLP-INT8, and a matched-capacity int8IO variant is flagged as future
+work (Limitations item 5, Conclusion's five future directions). No
+retraining was done for this — it's an accurate description of what
+exists, not a new experiment.
 
 ---
 
