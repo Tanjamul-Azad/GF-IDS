@@ -43,15 +43,32 @@ COL_DOUBLE = 7.16
 
 # Okabe-Ito, colour-vision-deficiency safe.
 STYLE = {
-    "BNN":        {"c": "#D55E00", "m": "o", "ls": "-"},
-    "MLP":        {"c": "#0072B2", "m": "s", "ls": "--"},
-    "CNN":        {"c": "#E69F00", "m": "^", "ls": "-."},
-    "LSTM":       {"c": "#009E73", "m": "D", "ls": ":"},
-    "MLP-INT8":   {"c": "#CC79A7", "m": "v", "ls": "--"},
-    "BNN-INT8IO": {"c": "#56B4E9", "m": "P", "ls": "-"},
+    "BNN-MATCHED": {"c": "#D55E00", "m": "o", "ls": "-"},
+    "MLP":         {"c": "#0072B2", "m": "s", "ls": "--"},
+    "CNN":         {"c": "#E69F00", "m": "^", "ls": "-."},
+    "LSTM":        {"c": "#009E73", "m": "D", "ls": ":"},
+    "MLP-INT8":    {"c": "#CC79A7", "m": "v", "ls": "--"},
+    "BNN-INT8IO":  {"c": "#56B4E9", "m": "P", "ls": "-"},
+    "BNN":         {"c": "#8B4000", "m": "X", "ls": "-."},
+    "BNN-FULL":    {"c": "#999999", "m": "*", "ls": ":"},
 }
-ORDER = ["BNN", "BNN-INT8IO", "MLP", "MLP-INT8", "CNN", "LSTM"]
-LABEL = {m: ("BNN-FL (proposed)" if m == "BNN" else f"{m}-FL") for m in STYLE}
+
+# The six models the main results compare. BNN-MATCHED is the
+# proposed model: its weight matrices are the same shape as MLP's, so
+# precision is the only variable that differs between them. The
+# original BNN (an undocumented extra 128x128 layer, double the
+# weights of MLP) and BNN-FULL (every layer binarized, including
+# input/output) are ablations plotted separately, not part of the
+# main comparison.
+ORDER = ["BNN-MATCHED", "MLP", "LSTM", "CNN", "BNN-INT8IO", "MLP-INT8"]
+ABLATION_ORDER = ["BNN-MATCHED", "BNN", "BNN-FULL"]
+
+LABEL = {
+    "BNN-MATCHED": "BNN-FL (proposed)",
+    "BNN": "BNN-FL (extra layer)",
+    "BNN-FULL": "BNN-FL (fully binarized)",
+}
+LABEL.update({m: f"{m}-FL" for m in STYLE if m not in LABEL})
 
 plt.rcParams.update({
     "font.size": 8,
@@ -151,7 +168,7 @@ def fig_convergence(histories):
     _save(fig, "fig_convergence")
 
 
-def fig_perclass_f1(f1_a, f1_b, class_names, name_a="MLP", name_b="BNN"):
+def fig_perclass_f1(f1_a, f1_b, class_names, name_a="MLP", name_b="BNN-MATCHED"):
     fig, ax = plt.subplots(figsize=(COL_DOUBLE, 3.4))
     x = np.arange(len(class_names))
     w = 0.4
@@ -188,7 +205,7 @@ def _short_class(name):
                 .replace("HostDiscovery", "HostDisc"))
 
 
-def fig_roc(y_true, probs_a, probs_b, num_classes, name_a="MLP", name_b="BNN"):
+def fig_roc(y_true, probs_a, probs_b, num_classes, name_a="MLP", name_b="BNN-MATCHED"):
     """ROC with an inset, since both curves sit against the top left."""
     y_bin = label_binarize(y_true, classes=np.arange(num_classes))
     fig, ax = plt.subplots(figsize=(COL_SINGLE, 2.9))
@@ -239,7 +256,7 @@ def fig_communication(payload):
     ax.set_xticks(range(len(names)))
     ax.set_xticklabels([LABEL[m].replace(" (proposed)", "") for m in names],
                        rotation=30, ha="right")
-    ax.set_ylabel("Uplink payload per round (KB)")
+    ax.set_ylabel("Downlink payload per round (KB)")
     ax.set_ylim(0, max(values) * 1.18)
     ax.grid(axis="y", alpha=0.25, linestyle="--", linewidth=0.5)
     _style_axes(ax)
@@ -329,14 +346,14 @@ def fig_misclassification(preds, labels, class_names, top_n=10):
 def fig_pareto(accuracy, payload):
     # Hand-placed label offsets: several points sit close together and
     # a single default offset makes them collide.
-    OFFSET = {"BNN": (8, 6), "BNN-INT8IO": (9, 3), "MLP": (8, 5),
+    OFFSET = {"BNN-MATCHED": (8, 6), "BNN-INT8IO": (9, 3), "MLP": (8, 5),
               "MLP-INT8": (9, -10), "CNN": (-6, -14), "LSTM": (-8, 8)}
     fig, ax = plt.subplots(figsize=(COL_SINGLE, 2.9))
     for m in ORDER:
         if m not in accuracy or m not in payload:
             continue
         s = STYLE[m]
-        ax.scatter(payload[m], accuracy[m], s=95 if m == "BNN" else 50,
+        ax.scatter(payload[m], accuracy[m], s=95 if m == "BNN-MATCHED" else 50,
                    marker=s["m"], color=s["c"], edgecolor="black",
                    linewidth=0.6, zorder=3)
         ax.annotate(LABEL[m].replace(" (proposed)", "").replace("-FL", ""),
@@ -347,7 +364,7 @@ def fig_pareto(accuracy, payload):
     lo = min(accuracy.values())
     hi = max(accuracy.values())
     ax.set_ylim(lo - 2.5, hi + 2.5)
-    ax.set_xlabel("Uplink payload per round (KB, log scale)")
+    ax.set_xlabel("Downlink payload per round (KB, log scale)")
     ax.set_ylabel("Best accuracy (%)")
     ax.annotate("better", xy=(0.07, 0.93), xycoords="axes fraction",
                 fontsize=6.5, style="italic")
@@ -384,7 +401,7 @@ def fig_precision_tiers(accuracy, payload):
 
     axes[1].bar(idx, [payload[m] for m in names], color=colors,
                 edgecolor="black", linewidth=0.4)
-    axes[1].set_ylabel("Payload per round (KB)")
+    axes[1].set_ylabel("Downlink payload per round (KB)")
     axes[1].set_title("(b) Communication cost")
     for k, m in enumerate(names):
         axes[1].text(k, payload[m] + 0.8, f"{payload[m]:.2f}",
@@ -404,7 +421,7 @@ def fig_class_distribution(y_test, class_names):
     order = np.argsort(-counts)
     fig, ax = plt.subplots(figsize=(COL_DOUBLE, 2.5))
     idx = np.arange(len(class_names))
-    colors = ["#999999" if counts[c] >= 150 else STYLE["BNN"]["c"]
+    colors = ["#999999" if counts[c] >= 150 else STYLE["BNN-MATCHED"]["c"]
               for c in order]
     ax.bar(idx, counts[order], color=colors, edgecolor="black", linewidth=0.3)
     ax.set_yscale("log")
@@ -419,6 +436,62 @@ def fig_class_distribution(y_test, class_names):
     _style_axes(ax)
     fig.tight_layout()
     _save(fig, "fig_class_distribution")
+
+
+def fig_ablation(df, histories):
+    """Isolate what capacity and full binarization are each worth.
+
+    Three points, same seed and round budget: BNN-MATCHED (the
+    proposed model), BNN (an undocumented extra 128x128 layer, double
+    the weights), and BNN-FULL (every layer binarized, including
+    input/output). The gap from BNN-MATCHED to BNN shows that the
+    extra capacity does not help; the gap from BNN-MATCHED to
+    BNN-FULL shows what keeping the input/output layers in Float32
+    is worth.
+    """
+    names = [m for m in ABLATION_ORDER if m in df.index]
+    if len(names) < 2:
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(COL_DOUBLE, 2.7))
+
+    for name in names:
+        if name not in histories:
+            continue
+        h = histories[name]
+        s = STYLE[name]
+        rounds = [x["round"] for x in h]
+        axes[0].plot(rounds, [x["accuracy"] * 100 for x in h],
+                     color=s["c"], marker=s["m"], linestyle=s["ls"],
+                     markersize=2.6, linewidth=1.1,
+                     markevery=3, label=LABEL[name])
+    axes[0].set_xlabel("Communication round")
+    axes[0].set_ylabel("Global test accuracy (%)")
+    axes[0].set_title("(a) Accuracy over training")
+    axes[0].legend(edgecolor="black", framealpha=1.0, fontsize=6.5)
+    axes[0].grid(alpha=0.25, linestyle="--", linewidth=0.5)
+    _style_axes(axes[0])
+
+    idx = np.arange(len(names))
+    colors = [STYLE[m]["c"] for m in names]
+    short = [LABEL[m] for m in names]
+    params = [df.loc[m, "Parameters"] for m in names]
+    acc = [df.loc[m, "Accuracy(%)"] for m in names]
+    bars = axes[1].bar(idx, params, color=colors, edgecolor="black",
+                       linewidth=0.4)
+    for bar, p, a in zip(bars, params, acc):
+        axes[1].text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                    f"{p:,.0f}\n({a:.2f}%)", ha="center", va="bottom",
+                    fontsize=6)
+    axes[1].set_ylabel("Trainable parameters")
+    axes[1].set_title("(b) Capacity vs. best accuracy")
+    axes[1].set_xticks(idx)
+    axes[1].set_xticklabels(short, rotation=20, ha="right", fontsize=6.5)
+    axes[1].set_ylim(0, max(params) * 1.35)
+    axes[1].grid(axis="y", alpha=0.25, linestyle="--", linewidth=0.5)
+    _style_axes(axes[1])
+
+    fig.tight_layout()
+    _save(fig, "fig_ablation")
 
 
 def main():
@@ -451,17 +524,17 @@ def main():
     fig_class_distribution(y_test, class_names)
 
     mlp = load_model("MLP", input_dim, num_classes, args.seed, args.suffix)
-    bnn = load_model("BNN", input_dim, num_classes, args.seed, args.suffix)
+    bm = load_model("BNN-MATCHED", input_dim, num_classes, args.seed, args.suffix)
     preds_mlp, labels, probs_mlp = predict(mlp, X_test, y_test, True)
-    preds_bnn, _, probs_bnn = predict(bnn, X_test, y_test, True)
+    preds_bm, _, probs_bm = predict(bm, X_test, y_test, True)
 
     f1_mlp = f1_score(labels, preds_mlp, average=None,
                       labels=np.arange(num_classes), zero_division=0)
-    f1_bnn = f1_score(labels, preds_bnn, average=None,
-                      labels=np.arange(num_classes), zero_division=0)
-    fig_perclass_f1(f1_mlp, f1_bnn, class_names)
-    fig_roc(labels, probs_mlp, probs_bnn, num_classes)
-    fig_misclassification(preds_bnn, labels, class_names)
+    f1_bm = f1_score(labels, preds_bm, average=None,
+                     labels=np.arange(num_classes), zero_division=0)
+    fig_perclass_f1(f1_mlp, f1_bm, class_names)
+    fig_roc(labels, probs_mlp, probs_bm, num_classes)
+    fig_misclassification(preds_bm, labels, class_names)
 
     # Efficiency panels read the table evaluate.py wrote, so the figures
     # and the tables cannot drift apart.
@@ -478,6 +551,7 @@ def main():
                                  payload, df["Parameters"].to_dict())
         fig_pareto(accuracy, payload)
         fig_precision_tiers(accuracy, payload)
+        fig_ablation(df, histories)
     else:
         print(f"  {results_csv} not found, skipping efficiency figures")
 
