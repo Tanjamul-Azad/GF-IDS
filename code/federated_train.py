@@ -346,6 +346,7 @@ def federated_training(model_name, clients, X_test, y_test,
     # finished in a single session.
     history = []
     start_round = 0
+    prev_binary_state = None
     if resume and os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location=device)
         global_model.load_state_dict(ckpt["model_state"])
@@ -367,6 +368,14 @@ def federated_training(model_name, clients, X_test, y_test,
     if requant_keys:
         print(f"  Re-quantizing after aggregation: "
               f"{sorted(requant_keys)}")
+
+    # On resume, seed the sign-flip baseline from the checkpoint's
+    # already-re-binarized weights, so the first round after a resume
+    # is compared against the real previous round rather than being
+    # treated as if no prior round existed.
+    if rebin_keys and start_round > 0:
+        state = global_model.state_dict()
+        prev_binary_state = {k: state[k].clone() for k in rebin_keys}
 
     if start_round >= rounds:
         print(f"  Already complete ({start_round}/{rounds} rounds)")
@@ -400,13 +409,36 @@ def federated_training(model_name, clients, X_test, y_test,
         global_model.load_state_dict(
             fedavg(local_states, local_sizes, rebin_keys, requant_keys))
 
+        # Fraction of binary weights whose sign changed from the
+        # previous round's re-binarized global model. Investigates the
+        # non-IID robustness question raised in the paper: whether
+        # severe client skew makes the post-aggregation sign() step
+        # discard more information round to round than it does at
+        # IID or moderate skew. None on the first round of a fresh
+        # run, since there is no previous re-binarized state to
+        # compare against.
+        sign_flip_rate = None
+        if rebin_keys:
+            state = global_model.state_dict()
+            cur_binary_state = {k: state[k].clone() for k in rebin_keys}
+            if prev_binary_state is not None:
+                flipped = total = 0
+                for k in rebin_keys:
+                    flipped += (prev_binary_state[k].sign()
+                               != cur_binary_state[k].sign()).sum().item()
+                    total += prev_binary_state[k].numel()
+                sign_flip_rate = flipped / total
+            prev_binary_state = cur_binary_state
+
         acc = evaluate(global_model, X_test, y_test)
         loss_val = evaluate_loss(global_model, X_test, y_test, criterion)
         history.append({"round": t + 1, "accuracy": acc, "loss": loss_val,
-                        "lr": round_lr})
+                        "lr": round_lr, "sign_flip_rate": sign_flip_rate})
+        flip_note = (f"  flip={sign_flip_rate:.4f}"
+                    if sign_flip_rate is not None else "")
         lr_note = f"  lr={round_lr:.2e}" if lr_decay != 1.0 else ""
         print(f"  Round {t + 1:2d}/{rounds} - Accuracy: {acc:.4f}  "
-              f"Loss: {loss_val:.4f}{lr_note}")
+              f"Loss: {loss_val:.4f}{lr_note}{flip_note}")
 
         # Save the weights at the best-accuracy round separately, since
         # the resumable checkpoint below is overwritten every round and

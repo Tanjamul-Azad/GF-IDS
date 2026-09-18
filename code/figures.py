@@ -51,6 +51,7 @@ STYLE = {
     "BNN-INT8IO":  {"c": "#56B4E9", "m": "P", "ls": "-"},
     "BNN":         {"c": "#8B4000", "m": "X", "ls": "-."},
     "BNN-FULL":    {"c": "#999999", "m": "*", "ls": ":"},
+    "BiPruneFL-Repro": {"c": "#F0E442", "m": "h", "ls": "-"},
 }
 
 # The six models the main results compare. BNN-MATCHED is the
@@ -67,6 +68,7 @@ LABEL = {
     "BNN-MATCHED": "BNN-FL (proposed)",
     "BNN": "BNN-FL (extra layer)",
     "BNN-FULL": "BNN-FL (fully binarized)",
+    "BiPruneFL-Repro": "BiPruneFL (reproduced)",
 }
 LABEL.update({m: f"{m}-FL" for m in STYLE if m not in LABEL})
 
@@ -494,6 +496,85 @@ def fig_ablation(df, histories):
     _save(fig, "fig_ablation")
 
 
+def fig_noniid(df_iid, df_dir05, df_dir01):
+    """Accuracy across client-data heterogeneity, IID to severe skew.
+
+    One line per model, x-axis is IID -> alpha=0.5 (moderate) ->
+    alpha=0.1 (severe). Drawn deliberately as a line plot rather than
+    grouped bars so the crossover is visible at a glance: BNN-MATCHED
+    leads at the first two points and is overtaken at the third, which
+    a table of the same three numbers does not make as immediate.
+    """
+    names = [m for m in ORDER if m in df_iid.index]
+    x = np.arange(3)
+    fig, ax = plt.subplots(figsize=(COL_SINGLE, 2.6))
+    for name in names:
+        if name not in df_dir05.index or name not in df_dir01.index:
+            continue
+        s = STYLE[name]
+        y = [df_iid.loc[name, "Accuracy(%)"],
+            df_dir05.loc[name, "Accuracy(%)"],
+            df_dir01.loc[name, "Accuracy(%)"]]
+        ax.plot(x, y, color=s["c"], marker=s["m"], linestyle=s["ls"],
+               markersize=4, linewidth=1.2, label=LABEL[name])
+    ax.set_xticks(x)
+    ax.set_xticklabels(["IID", r"$\alpha$=0.5" "\n(moderate)",
+                        r"$\alpha$=0.1" "\n(severe)"])
+    ax.set_ylabel("Best accuracy (%)")
+    ax.legend(edgecolor="black", framealpha=1.0, fontsize=6, ncol=2,
+             loc="lower left")
+    ax.grid(alpha=0.25, linestyle="--", linewidth=0.5)
+    _style_axes(ax)
+    fig.tight_layout()
+    _save(fig, "fig_noniid")
+
+
+def fig_bipru(df):
+    """BNN-FL against the reproduced external baseline, and MLP-FL for
+    scale. Two panels: accuracy is close between the first two: the
+    payload is not, and that second panel is the point of the figure.
+    """
+    names = [m for m in ("BNN-MATCHED", "BiPruneFL-Repro", "MLP")
+            if m in df.index]
+    if len(names) < 2:
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(COL_DOUBLE, 2.5))
+    idx = np.arange(len(names))
+    colors = [STYLE[m]["c"] for m in names]
+    short = [LABEL[m] for m in names]
+
+    acc = [df.loc[m, "Accuracy(%)"] for m in names]
+    bars = axes[0].bar(idx, acc, color=colors, edgecolor="black",
+                       linewidth=0.4)
+    for bar, a in zip(bars, acc):
+        axes[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                    f"{a:.2f}", ha="center", va="bottom", fontsize=6.5)
+    axes[0].set_ylabel("Best accuracy (%)")
+    axes[0].set_title("(a) Accuracy")
+    axes[0].set_xticks(idx)
+    axes[0].set_xticklabels(short, rotation=15, ha="right", fontsize=6.5)
+    axes[0].set_ylim(0, max(acc) * 1.2)
+    axes[0].grid(axis="y", alpha=0.25, linestyle="--", linewidth=0.5)
+    _style_axes(axes[0])
+
+    payload = [df.loc[m, "PackedPayload(KB)"] for m in names]
+    bars = axes[1].bar(idx, payload, color=colors, edgecolor="black",
+                       linewidth=0.4)
+    for bar, p in zip(bars, payload):
+        axes[1].text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                    f"{p:.1f}", ha="center", va="bottom", fontsize=6.5)
+    axes[1].set_ylabel("Downlink payload (KB/round)")
+    axes[1].set_title("(b) Communication")
+    axes[1].set_xticks(idx)
+    axes[1].set_xticklabels(short, rotation=15, ha="right", fontsize=6.5)
+    axes[1].set_ylim(0, max(payload) * 1.3)
+    axes[1].grid(axis="y", alpha=0.25, linestyle="--", linewidth=0.5)
+    _style_axes(axes[1])
+
+    fig.tight_layout()
+    _save(fig, "fig_bipru")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=SEED)
@@ -552,6 +633,16 @@ def main():
         fig_pareto(accuracy, payload)
         fig_precision_tiers(accuracy, payload)
         fig_ablation(df, histories)
+        fig_bipru(df)
+
+        dir05_csv = os.path.join(RUN_DIR, f"results_{args.suffix}_dir0.5.csv")
+        dir01_csv = os.path.join(RUN_DIR, f"results_{args.suffix}_dir0.1.csv")
+        if os.path.exists(dir05_csv) and os.path.exists(dir01_csv):
+            df_dir05 = pd.read_csv(dir05_csv).set_index("Model")
+            df_dir01 = pd.read_csv(dir01_csv).set_index("Model")
+            fig_noniid(df, df_dir05, df_dir01)
+        else:
+            print("  non-IID result CSVs not found, skipping fig_noniid")
     else:
         print(f"  {results_csv} not found, skipping efficiency figures")
 

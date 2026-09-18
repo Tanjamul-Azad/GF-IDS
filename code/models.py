@@ -261,6 +261,38 @@ class BNNMatchedModel(nn.Module):
         return self.output_layer(x)
 
 
+class BNNInt8IOMatchedModel(nn.Module):
+    """Hybrid-precision BNN-INT8IO with the same topology as
+    BNNMatchedModel / MLPModel.
+
+    BNNInt8IOModel carries the same undocumented extra 128x128 layer
+    BNNModel does, so its 32,514 parameters are double MLP-INT8's
+    15,938 -- the identical capacity confound BNNMatchedModel already
+    fixes for the Float32-I/O variant, just not yet fixed here. This
+    class is that fix: weight matrices are 31x128, 128x64, 64x32,
+    32x34, matching MLPModel/BNNMatchedModel exactly, with only the
+    input and output layers moved to int8 rather than binarized.
+    """
+
+    def __init__(self, input_dim, num_classes, binarize_activations=True,
+                bits=8):
+        super().__init__()
+        act = BinaryActivation if binarize_activations else nn.Hardtanh
+
+        self.input_layer = QuantLinear(input_dim, 128, bits=bits)
+        self.hidden1 = nn.Sequential(
+            BinaryLinear(128, 64), nn.BatchNorm1d(64), act())
+        self.hidden2 = nn.Sequential(
+            BinaryLinear(64, 32), nn.BatchNorm1d(32), act())
+        self.output_layer = QuantLinear(32, num_classes, bits=bits)
+
+    def forward(self, x):
+        x = torch.relu(self.input_layer(x))
+        x = self.hidden1(x)
+        x = self.hidden2(x)
+        return self.output_layer(x)
+
+
 # ─────────────────────────────────────────────────────────────
 # External baseline (reproduced, not the original authors' code) --
 # BiPruneFL (S. Lee, H. Jang, IEEE Access 2025). See edgepop_ops.py
@@ -319,5 +351,6 @@ MODEL_REGISTRY = {
     "BNN-INT8IO": BNNInt8IOModel,
     "BNN-FULL": BNNFullModel,
     "BNN-MATCHED": BNNMatchedModel,
+    "BNN-INT8IO-MATCHED": BNNInt8IOMatchedModel,
     "BiPruneFL-Repro": BiPruneFLReproModel,
 }
