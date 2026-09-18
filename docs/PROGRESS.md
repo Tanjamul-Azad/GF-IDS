@@ -5,19 +5,22 @@ something changes; read this file first. Full round-by-round numbers and
 the reasoning behind each decision are in
 [`RUN_RESULTS.md`](RUN_RESULTS.md).
 
-**Last updated: 2026-09-16.**
+**Last updated: 2026-09-18.**
 
 ## Status
 
-All 8 model variants are complete, run locally on an RTX 4060 (not
-Colab — an earlier hardware/library difference moved accuracy by up
-to ~6 points, see Limitations in the manuscript), all at `T=45`
-rounds, `seed=42`. The six-model headline comparison plus two
-ablations (`BNN-FULL`, fully binarized; the original unmatched `BNN`)
-are all written into the manuscript, including a new ablation section,
-a rewritten int8 comparison, and honest downlink/uplink/round-trip
-communication accounting throughout. The manuscript currently compiles
-cleanly (0 errors, 0 warnings, 16 pages, IEEEtran/IoT-J template).
+All 8 IID model variants, all 6 headline models at two non-IID
+severities (12 more runs), and one external baseline reproduction
+(`BiPruneFL-Repro`, 21 runs total) are complete, run locally on an
+RTX 4060, all at `T=45` rounds, `seed=42`. The IID six-model headline
+comparison plus two ablations (`BNN-FULL`, fully binarized; the
+original unmatched `BNN`) are written into the manuscript, including
+an ablation section, a rewritten int8 comparison, and honest
+downlink/uplink/round-trip communication accounting throughout. The
+manuscript currently compiles cleanly (0 errors, 0 warnings, 16 pages,
+IEEEtran/IoT-J template). **Not yet written into the manuscript**: the
+non-IID results and the BiPruneFL-Repro comparison below — numbers are
+verified and ready, the `main.tex` integration pass hasn't happened yet.
 
 ## The headline result
 
@@ -94,6 +97,41 @@ BNN-FL is far cheaper at 90%. The paper does not claim BNN-FL wins on
 every threshold — it claims BNN-FL wins on reaching a *high-accuracy*
 model, which is the more demanding and more relevant claim.
 
+## New this pass: non-IID robustness and an external baseline
+
+Two new pieces of work, both complete (full reasoning and every number
+in `RUN_RESULTS.md`):
+
+**Non-IID (label-skew, Hsu et al. 2019 Dirichlet partition) at two
+severities:**
+
+| Model | IID (%) | alpha=0.5, moderate (%) | alpha=0.1, severe (%) |
+|---|---:|---:|---:|
+| **BNN-FL (proposed)** | **97.75** | **89.47** | 68.20 |
+| MLP-FL | 92.08 | 73.18 | 71.07 |
+| LSTM-FL | 96.22 | 79.95 | **72.00** |
+| CNN-FL | 89.18 | 83.60 | 69.85 |
+| BNN-INT8IO | 85.08 | 79.60 | 69.16 |
+| MLP-INT8 | 84.59 | 80.11 | 70.80 |
+
+Not a simple decline: BNN-FL leads at IID and at moderate skew (by 5.9
+points at alpha=0.5), then becomes the *worst* of six models at severe
+skew (alpha=0.1) — every other model beats it there. A threshold
+effect, reported honestly as one, not smoothed into "degrades under
+non-IID."
+
+**External baseline — `BiPruneFL-Repro`**, a reproduction of Lee &
+Jang's BiPruneFL (IEEE Access 2025), built on Biprop/edge-popup (frozen
+random weights, a learned pruning score, no weight training at all —
+see `code/edgepop_ops.py`). At IID: 97.96% best accuracy, MCC 0.9777,
+FPR 0.06% — matching or slightly beating BNN-FL at the same parameter
+count (15,938 vs 15,746). But its round-trip payload is 63.77 KB
+(identical to plain MLP-FL, since its trainable score has to move in
+full Float32 for FedAvg) against BNN-FL's 23.52 KB downlink — **2.7x
+more**. The honest claim: comparable accuracy to a genuine, recently
+published competing method, at a fraction of its communication cost —
+not "beats everything on every axis."
+
 ## What changed in the code, and why
 
 Full detail in the repository's commit history on `fix/ste-rebinarization`.
@@ -120,19 +158,26 @@ Summary of everything since the last update, in order:
 
 ## Open questions / next steps
 
-1. Train a matched-capacity `BNN-INT8IO` so the int8 comparison in the
+1. **Write the non-IID and BiPruneFL-Repro results into `main.tex`** —
+   numbers are verified and ready (this file, above), the manuscript
+   integration pass hasn't happened yet.
+2. Train a matched-capacity `BNN-INT8IO` so the int8 comparison in the
    manuscript has the same fair footing the main comparison now has —
    flagged as future work in Limitations, not yet done.
-2. Multiple seeds for confidence intervals — a single-seed
+3. Multiple seeds for confidence intervals — a single-seed
    Colab-vs-local hardware check already showed CNN-FL moving ~6
    points and MLP-FL ~4 points with everything else held fixed, so the
    baseline ordering (LSTM-FL vs MLP-FL vs CNN-FL specifically) should
    not be treated as settled.
-3. Non-IID client partitioning, physical IoT hardware validation, and
-   a real hardware energy measurement (Raspberry Pi 4 available) all
-   remain on the IoT-J readiness plan — see
-   `JOURNAL_TARGET_PLAN.md` (local only, not in this repo).
-4. Fig. 1's designed graphic (`final dig.pdf`) still says
+4. Investigate *why* BNN-FL specifically collapses at severe non-IID
+   skew while holding up at moderate skew and IID — not yet understood,
+   just measured.
+5. Physical IoT hardware validation and a real hardware energy
+   measurement (Raspberry Pi 4 available, `code/pi_benchmark.py`
+   ready and tested, needs the Pi on the network) remain on the IoT-J
+   readiness plan — see `JOURNAL_TARGET_PLAN.md` (local only, not in
+   this repo).
+6. Fig. 1's designed graphic (`final dig.pdf`) still says
    "Rounds (T): e.g., 20" — cosmetic, needs fixing by hand in whatever
    tool made it; not fixable from LaTeX since no source file is
    available in this environment.

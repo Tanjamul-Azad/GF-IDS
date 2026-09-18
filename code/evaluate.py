@@ -48,6 +48,8 @@ from sklearn.metrics import (confusion_matrix, f1_score, matthews_corrcoef,
 from torch.utils.data import DataLoader, TensorDataset
 
 from binary_ops import BinaryLinear, binary_weight_keys
+from edgepop_ops import (EdgePopupLinear, count_edgepop_linear,
+                         edgepop_frozen_keys, edgepop_score_keys)
 from federated_train import run_tag
 from models import MODEL_REGISTRY
 from quant_ops import QuantLinear, quant_weight_keys
@@ -103,13 +105,19 @@ def precision_map(model):
     return bits
 
 
-def payload_bits(model):
+def payload_bits(model, exclude=frozenset()):
     """Payload with each weight tensor priced at its own precision.
 
     Biases and BatchNorm parameters stay Float32, matching the hybrid
     precision design. A quantized tensor also carries one Float32
     scale factor, which is counted here because the receiver cannot
     reconstruct the weights without it.
+
+    `exclude` skips named tensors entirely (0 bits) -- used for
+    EdgePopupLinear's frozen weight buffers, which are fixed at
+    construction, identical across every client, and never touched
+    by training, so they do not need to cross the network after the
+    first round (see edgepop_frozen_keys()).
 
     Iterates the full state dict rather than named_parameters(),
     because FedAvg transports the whole state dict, including the
@@ -121,6 +129,8 @@ def payload_bits(model):
     bits = precision_map(model)
     total = 0
     for name, tensor in model.state_dict().items():
+        if name in exclude:
+            continue
         if name in bits:
             total += tensor.numel() * bits[name]
             if bits[name] > 1:
@@ -130,7 +140,7 @@ def payload_bits(model):
     return total
 
 
-def packed_payload_bits(model):
+def packed_payload_bits(model, exclude=frozenset()):
     """Payload measured by actually encoding each tensor.
 
     Serialises the state dict the way a real client would. Binary
@@ -138,11 +148,14 @@ def packed_payload_bits(model):
     per byte; int8 layers are cast to one byte per weight plus a
     Float32 scale; everything else keeps its native dtype. This is a
     measurement of the encoded bytes rather than an analytical
-    estimate.
+    estimate. `exclude` skips named tensors entirely, same as
+    payload_bits().
     """
     bits = precision_map(model)
     total_bits = 0
     for name, tensor in model.state_dict().items():
+        if name in exclude:
+            continue
         w = tensor.detach().cpu().numpy()
         if bits.get(name) == 1:
             packed = np.packbits((w > 0).astype(np.uint8).reshape(-1))
@@ -154,10 +167,11 @@ def packed_payload_bits(model):
     return total_bits
 
 
-def float32_payload_bits(model):
+def float32_payload_bits(model, exclude=frozenset()):
     """Payload if the whole state dict is sent as-is, uncompressed."""
     return sum(t.numel() * t.element_size() * 8
-               for t in model.state_dict().values())
+               for name, t in model.state_dict().items()
+               if name not in exclude)
 
 
 def count_binary_linear(module, x, y):
@@ -195,9 +209,15 @@ def count_quant_linear(module, x, y):
 def efficiency_metrics(model, X_test, y_test, input_dim):
     params = sum(p.numel() for p in model.parameters())
 
-    packed_kb = packed_payload_bits(model) / 8 / 1024
-    analytic_kb = payload_bits(model) / 8 / 1024
-    float32_kb = float32_payload_bits(model) / 8 / 1024
+    # EdgePopupLinear's frozen weight buffers never change round to
+    # round (see edgepop_ops.edgepop_frozen_keys()), so a real
+    # deployment only needs to send them once, not every round -- the
+    # per-round payload figures reported for BiPruneFL-Repro exclude
+    # them. Empty for every other model, so this is a no-op elsewhere.
+    exclude = edgepop_frozen_keys(model)
+    packed_kb = packed_payload_bits(model, exclude) / 8 / 1024
+    analytic_kb = payload_bits(model, exclude) / 8 / 1024
+    float32_kb = float32_payload_bits(model, exclude) / 8 / 1024
 
     # Operation counts, split by precision so the comparison is
     # explicit about what is a float multiply-accumulate and what is
@@ -208,12 +228,18 @@ def efficiency_metrics(model, X_test, y_test, input_dim):
 
         total_ops, _ = profile(model, inputs=(dummy,), verbose=False,
                                custom_ops={BinaryLinear: count_binary_linear,
-                                           QuantLinear: count_quant_linear})
+                                           QuantLinear: count_quant_linear,
+                                           EdgePopupLinear: count_edgepop_linear})
         # Split by precision so each tier is explicit: 1-bit XNOR/popcount
-        # (BOPs), 8-bit integer MACs (IOPs), and genuine float MACs.
+        # (BOPs -- EdgePopupLinear folds in here too, scaled by its
+        # sparsity, since it is also a signed-binary operation), 8-bit
+        # integer MACs (IOPs), and genuine float MACs.
         bops = sum(m.in_features * m.out_features
                    for m in model.modules()
                    if isinstance(m, BinaryLinear))
+        bops += sum(m.in_features * m.out_features * m.keep_fraction
+                    for m in model.modules()
+                    if isinstance(m, EdgePopupLinear))
         iops = sum(m.in_features * m.out_features
                    for m in model.modules()
                    if isinstance(m, QuantLinear))
@@ -265,6 +291,14 @@ def main():
     parser.add_argument("--class-weighted", action="store_true",
                         help="evaluate the class-weighted variant of the run "
                              "({model}_cw_seed{seed}_{suffix}.pt)")
+    parser.add_argument("--partition", default="iid",
+                        choices=["iid", "dirichlet"],
+                        help="evaluate the run trained with this client "
+                             "partition -- must match how it was trained")
+    parser.add_argument("--alpha", type=float, default=0.5,
+                        help="Dirichlet alpha of the run being evaluated, "
+                             "only used with --partition dirichlet, must "
+                             "match the value it was trained with")
     args = parser.parse_args()
 
     seed = None if args.seed < 0 else args.seed
@@ -276,7 +310,8 @@ def main():
 
     rows = []
     for name in args.models:
-        tag = run_tag(name, args.class_weighted, seed)
+        tag = run_tag(name, args.class_weighted, seed,
+                      args.partition, args.alpha)
         ckpt = os.path.join(RUN_DIR, f"{tag}_{args.suffix}.pt")
         if not os.path.exists(ckpt):
             print(f"Skipping {name}: {ckpt} not found")
@@ -299,7 +334,13 @@ def main():
         import pandas as pd
         df = pd.DataFrame(rows)
         os.makedirs(RUN_DIR, exist_ok=True)
-        out_csv = os.path.join(RUN_DIR, f"results_{args.suffix}.csv")
+        # Dirichlet results get their own file (results_best_dir0.1.csv,
+        # etc.) so a non-IID pass never overwrites the IID
+        # results_{suffix}.csv that main.tex's tables are built from.
+        csv_suffix = (f"_dir{args.alpha}"
+                     if args.partition == "dirichlet" else "")
+        out_csv = os.path.join(RUN_DIR,
+                               f"results_{args.suffix}{csv_suffix}.csv")
         df.to_csv(out_csv, index=False)
         print("\n" + df.to_string(index=False))
         print(f"\nSaved to {out_csv}")

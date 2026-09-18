@@ -727,3 +727,100 @@ ablation section above, not further training.
 
 Optional, not yet decided: SignSGD aggregation ablation, class-weighted
 loss re-run, learning-rate decay re-run, multi-seed runs for error bars.
+
+---
+
+## Non-IID Dirichlet partitioning + external baseline reproduction, T=45, seed=42
+
+Run 2026-09-15/18 on the local RTX 4060. Two new pieces of work, both
+completed: (1) the six headline models retrained under label-skew
+non-IID client partitioning (Hsu et al. 2019, `--partition dirichlet`)
+at two severities, alpha=0.1 (severe) and alpha=0.5 (moderate), against
+the existing IID baseline; (2) a faithful reproduction of BiPruneFL
+(S. Lee, H. Jang, IEEE Access 2025) as an external SOTA baseline,
+`BiPruneFL-Repro` in `MODEL_REGISTRY`, trained at IID under the same
+protocol as everything else.
+
+Implementation details, all in `code/`: `dirichlet_client_indices()`
+and the `--partition`/`--alpha` flags in `federated_train.py`;
+`edgepop_ops.py` (the Biprop/edge-popup mechanism BiPruneFL-Repro
+reproduces — frozen random weight, learned pruning score, top-k mask
+via a straight-through estimator) and the `BiPruneFLReproModel` class
+in `models.py`. Full design reasoning, including the two points where
+the original paper's paywalled full text forced a documented
+substitute (the amplitude-gain formula, the aggregation protocol) and
+the evidence-based correction to keep the input/output layers full
+precision (checked against the actual `chrundle/biprop` reference
+implementation rather than assumed), is in the code comments and
+`main.tex`'s ablation section.
+
+### Non-IID results — a non-monotonic finding, not a simple trend
+
+| Model | IID (%) | alpha=0.5 (%) | alpha=0.1 (%) |
+|---|---:|---:|---:|
+| **BNN-MATCHED** | **97.75** | **89.47** | 68.20 |
+| MLP | 92.08 | 73.18 | 71.07 |
+| LSTM | 96.22 | 79.95 | **72.00** |
+| CNN | 89.18 | 83.60 | 69.85 |
+| BNN-INT8IO | 85.08 | 79.60 | 69.16 |
+| MLP-INT8 | 84.59 | 80.11 | 70.80 |
+
+**BNN-MATCHED is not simply "more sensitive to non-IID data" — it is
+the best model at IID and at moderate skew, and specifically the
+*worst* of all six at severe skew.** At alpha=0.5 it leads by 5.9
+points over the next-best model (CNN, 83.60%); at alpha=0.1 every
+other model beats it, by up to 3.8 points (LSTM). This is a threshold
+effect, not a gradual decline, and it has to be reported as such: a
+reviewer who only sees "accuracy drops under non-IID" would be reading
+a different, less accurate story than what the data shows. Worth
+investigating further (not yet done) whether this is specific to how
+re-binarization interacts with highly skewed per-client updates.
+
+### BiPruneFL-Repro — a real external comparison, not a strawman
+
+At IID (`runs/results_best.csv`), `BiPruneFL-Repro` reaches **97.96%
+best accuracy** (round 41), MCC 0.9777, FPR 0.06% — matching or
+slightly exceeding BNN-MATCHED's 97.75% / 0.9754 / 0.07% on every
+security metric, at the same parameter budget (15,938 vs 15,746,
+capacity-controlled by design). Final-round accuracy ended low (80.86%
+at round 45, same FedAvg+Adam oscillation seen in every model in this
+project) — best-round is the metric this project reports, per the
+"Third confirmation that final-round accuracy is noise" decision
+earlier in this file.
+
+**The honest differentiator is communication, not accuracy.**
+BiPruneFL-Repro's score tensor has to be transmitted in full Float32
+every round for FedAvg to average it correctly — there is no
+downlink/uplink asymmetry the way BNN-MATCHED has, because the frozen
+weights need never be sent after round 1 but the *trainable* part
+(the score) is exactly as expensive as an ordinary float parameter.
+Its round-trip payload is **63.77 KB**, identical to plain MLP's, and
+**2.7x BNN-MATCHED's packed downlink (23.52 KB)**. So the reproduced
+external baseline is a genuine, non-strawman competitor on accuracy —
+it is not a competitor on the efficiency axis this paper's whole
+argument rests on. That is the correct, defensible claim for `main.tex`:
+"comparable to state-of-the-art accuracy, at a fraction of the
+communication cost," not "beats everything on every axis."
+
+### What is now fully complete
+
+All 13 planned training runs are done: 8 models at IID (from the
+earlier pass) + 6 headline models x 2 non-IID severities (12 runs,
+one, BNN-MATCHED, shared its IID number so effectively 12 new runs)
++ BiPruneFL-Repro. `runs/results_best.csv`, `runs/results_best_dir0.1.csv`
+and `runs/results_best_dir0.5.csv` all hold verified, non-fabricated
+numbers, checked directly against the CSV files during this run, not
+estimated.
+
+### Still open (unchanged from before this pass)
+
+Matched-capacity `BNN-INT8IO` (still carries the old unmatched
+architecture), multi-seed runs (single seed=42 throughout — the
+Colab-vs-local-hardware finding earlier in this file, up to 5.96
+points difference from hardware alone, is itself the strongest
+argument that single-seed claims aren't reliable), non-IID robustness
+investigation (why the threshold effect above happens), Raspberry Pi
+hardware energy measurement (device in hand, `code/pi_benchmark.py`
+ready, not yet run — needs the Pi on the network), and `final dig.pdf`'s
+stale "Rounds (T): e.g., 20" text (cosmetic, needs manual fixing in
+the original design tool).

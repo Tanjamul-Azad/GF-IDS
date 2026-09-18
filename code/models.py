@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 
 from binary_ops import BinaryActivation, BinaryLinear
+from edgepop_ops import EdgePopupLinear
 from quant_ops import QuantLinear
 
 
@@ -260,6 +261,55 @@ class BNNMatchedModel(nn.Module):
         return self.output_layer(x)
 
 
+# ─────────────────────────────────────────────────────────────
+# External baseline (reproduced, not the original authors' code) --
+# BiPruneFL (S. Lee, H. Jang, IEEE Access 2025). See edgepop_ops.py
+# for exactly what is faithfully reproduced (the score-based binary
+# subnetwork search, Biprop/edge-popup) versus what had to be a
+# documented, standard substitute because the full paper text sits
+# behind IEEE Xplore's paywall (the amplitude-gain formula, the
+# aggregation protocol).
+#
+# Input and output layers are kept as plain, full-precision nn.Linear;
+# only the two middle layers use EdgePopupLinear. This was checked,
+# not assumed: the reference implementation behind Biprop itself
+# (github.com/chrundle/biprop, the ICLR 2021 Multi-Prize Lottery
+# Ticket code that BiPruneFL builds on) exposes `first_layer_type` and
+# `--last_layer_dense` as explicit, commonly-used options for running
+# the first/last layer through a plain dense layer instead of the
+# pruned/binary subnet layer -- so preserving I/O precision here is
+# a documented convention of this method family, not GF-IDS's own
+# hybrid design choice imposed on someone else's method. (An earlier
+# version of this file applied EdgePopupLinear to all four layers on
+# the untested assumption that whole-network application was more
+# faithful; that assumption turned out to be backwards once the
+# reference code was actually checked.)
+#
+# Same 31-128-64-32-34 topology as MLPModel/BNNMatchedModel, so the
+# architecture itself is controlled for, consistent with this
+# project's own capacity-matching standard (see BNNMatchedModel).
+#
+# The original paper sweeps several pruning ratios; this reproduces
+# one documented headline operating point, 50% sparsity (keep_fraction
+# 0.5) on the two middle layers, rather than a full ratio sweep.
+# ─────────────────────────────────────────────────────────────
+class BiPruneFLReproModel(nn.Module):
+    def __init__(self, input_dim, num_classes, keep_fraction=0.5):
+        super().__init__()
+        self.layer1 = nn.Linear(input_dim, 128)
+        self.bn1 = nn.BatchNorm1d(128)
+        self.layer2 = EdgePopupLinear(128, 64, keep_fraction=keep_fraction)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.layer3 = EdgePopupLinear(64, 32, keep_fraction=keep_fraction)
+        self.layer4 = nn.Linear(32, num_classes)
+
+    def forward(self, x):
+        x = torch.relu(self.bn1(self.layer1(x)))
+        x = torch.relu(self.bn2(self.layer2(x)))
+        x = torch.relu(self.layer3(x))
+        return self.layer4(x)
+
+
 MODEL_REGISTRY = {
     "MLP": MLPModel,
     "CNN": CNNModel,
@@ -269,4 +319,5 @@ MODEL_REGISTRY = {
     "BNN-INT8IO": BNNInt8IOModel,
     "BNN-FULL": BNNFullModel,
     "BNN-MATCHED": BNNMatchedModel,
+    "BiPruneFL-Repro": BiPruneFLReproModel,
 }

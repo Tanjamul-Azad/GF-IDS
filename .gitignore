@@ -12,6 +12,12 @@ archive*.zip
 # checkpoint can be regenerated exactly from the code, the data and
 # the seed, so storing the binary weights themselves would only add
 # repeated dead weight to the repo across every rerun and variant.
+#
+# The blanket "*.csv" rule above (for dataset/derived arrays) was
+# silently catching runs/results_*.csv too, contradicting this
+# comment's stated intent -- these two exceptions restore it.
+!runs/results_*.csv
+!runs/seed_summary.csv
 runs/*.pt
 *.pt
 

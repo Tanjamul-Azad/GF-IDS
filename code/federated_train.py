@@ -63,36 +63,95 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def split_clients(X_train, y_train, num_clients=NUM_CLIENTS):
-    """Partition the training set into IID shards, one per client.
+def dirichlet_client_indices(y_train, num_clients, alpha):
+    """Label-skew non-IID partition (Hsu et al. 2019, "Measuring the
+    Effects of Non-Identical Data Distribution for Federated Visual
+    Classification"): each class's samples are split across clients
+    according to an independent Dir(alpha) draw, so every client ends
+    up with a different class mix. Smaller alpha means more skew (a
+    client can end up with almost none of a given class); alpha -> inf
+    converges to the IID split.
 
-    Each shard is further split into a local train/test portion;
-    only the local train portion is used for federated updates.
+    Uses the global numpy RNG (seeded by set_seed()), same as the IID
+    path, so the partition is reproducible from --seed alone.
+    """
+    num_classes = int(y_train.max()) + 1
+    client_idx = [[] for _ in range(num_clients)]
+    for c in range(num_classes):
+        idx_c = np.where(y_train == c)[0]
+        np.random.shuffle(idx_c)
+        proportions = np.random.dirichlet(np.repeat(alpha, num_clients))
+        split_points = (np.cumsum(proportions) * len(idx_c)).astype(int)[:-1]
+        for client, part in enumerate(np.split(idx_c, split_points)):
+            client_idx[client].extend(part.tolist())
+    for i in range(num_clients):
+        np.random.shuffle(client_idx[i])
+    return [np.array(idx) for idx in client_idx]
+
+
+def split_clients(X_train, y_train, num_clients=NUM_CLIENTS,
+                  partition="iid", alpha=0.5):
+    """Partition the training set into per-client shards.
+
+    partition="iid" (default): equal-size random shards, byte-identical
+    to the original behaviour -- every existing result stays reproducible.
+    partition="dirichlet": label-skew non-IID split, severity set by alpha
+    (see dirichlet_client_indices()).
+
+    Each shard is further split into a local train/test portion; only
+    the local train portion is used for federated updates. A shard that
+    ends up with fewer than 2 examples of some class (possible at low
+    alpha) falls back to an unstratified local split for that client,
+    since sklearn's stratified split requires at least 2 per class.
 
     Seeded by set_seed(), so every model in a comparison receives the
     identical partition.
     """
-    indices = np.random.permutation(len(X_train))
-    X_shuf, y_shuf = X_train[indices], y_train[indices]
-    csize = len(X_shuf) // num_clients
+    if partition == "iid":
+        indices = np.random.permutation(len(X_train))
+        csize = len(indices) // num_clients
+        client_idx = [indices[i * csize:(i + 1) * csize]
+                      for i in range(num_clients)]
+    elif partition == "dirichlet":
+        client_idx = dirichlet_client_indices(y_train, num_clients, alpha)
+    else:
+        raise ValueError(f"Unknown partition: {partition!r}")
 
     clients = []
     for i in range(num_clients):
-        X_c = X_shuf[i * csize:(i + 1) * csize]
-        y_c = y_shuf[i * csize:(i + 1) * csize]
+        X_c, y_c = X_train[client_idx[i]], y_train[client_idx[i]]
+        _, counts = np.unique(y_c, return_counts=True)
+        can_stratify = len(counts) > 0 and counts.min() >= 2
         X_tr, X_te, y_tr, y_te = train_test_split(
             X_c, y_c, test_size=CLIENT_TEST_FRACTION,
-            random_state=SEED, stratify=y_c)
+            random_state=SEED, stratify=y_c if can_stratify else None)
         clients.append({"X_train": X_tr, "X_test": X_te,
                         "y_train": y_tr, "y_test": y_te})
-        print(f"Client {i + 1}: Train={X_tr.shape[0]:,}")
+        n_classes = len(np.unique(y_c))
+        extra = (f", {n_classes} classes present"
+                if partition == "dirichlet" else "")
+        print(f"Client {i + 1}: Train={X_tr.shape[0]:,}{extra}")
     return clients
 
 
 def get_loader(X, y, batch_size=BATCH_SIZE):
+    """A fresh DataLoader is created per client per round, so across a
+    45-round x 5-client x many-model run this constructs it thousands
+    of times. num_workers=0 (in-process, no worker subprocesses) is
+    deliberate, not a perf default left alone: on Windows, spawning
+    fresh worker processes this often can exhaust the pagefile-backed
+    shared memory commit limit and crash mid-run with "Couldn't open
+    shared file mapping" (seen on this project's own non-IID run,
+    which died silently at round 40/45 without the caller noticing --
+    see run_noniid.ps1's exit-code check, added for the same reason).
+    The data here is already in memory as numpy arrays (no per-sample
+    disk I/O or decoding), so worker-process parallelism was not doing
+    useful overlapped work anyway -- num_workers=0 removes the crash
+    risk without a real throughput cost for this workload.
+    """
     ds = TensorDataset(torch.FloatTensor(X), torch.LongTensor(y))
     return DataLoader(ds, batch_size=batch_size, shuffle=True,
-                      num_workers=2, pin_memory=True)
+                      num_workers=0, pin_memory=True)
 
 
 def train_one_round(model, loader, optimizer, criterion, epochs):
@@ -242,13 +301,16 @@ def class_weights_from(clients, num_classes):
     return weights * (num_classes / weights.sum())
 
 
-def run_tag(model_name, class_weighted=False, seed=None):
+def run_tag(model_name, class_weighted=False, seed=None,
+            partition="iid", alpha=None):
     """Filename stem identifying one run, so variants never collide."""
     tag = model_name
     if class_weighted:
         tag += "_cw"
     if seed is not None:
         tag += f"_seed{seed}"
+    if partition == "dirichlet":
+        tag += f"_dir{alpha}"
     return tag
 
 
@@ -258,9 +320,10 @@ def federated_training(model_name, clients, X_test, y_test,
                        lr=LEARNING_RATE, rebinarize=True, seed=None,
                        class_weighted=False, resume=False,
                        delta=0.001, patience=5, min_rounds=15,
-                       lr_decay=1.0, lr_min=1e-6):
+                       lr_decay=1.0, lr_min=1e-6,
+                       partition="iid", alpha=None):
     ModelClass = MODEL_REGISTRY[model_name]
-    tag = run_tag(model_name, class_weighted, seed)
+    tag = run_tag(model_name, class_weighted, seed, partition, alpha)
     ckpt_path = os.path.join(OUT_DIR, f"{tag}_checkpoint.pt")
 
     print(f"\n{'=' * 45}\n  Training: {model_name}\n{'=' * 45}")
@@ -449,6 +512,19 @@ def main():
     parser.add_argument("--lr-min", type=float, default=1e-6,
                         help="floor for --lr-decay so the rate never "
                              "reaches zero")
+    parser.add_argument("--partition", default="iid",
+                        choices=["iid", "dirichlet"],
+                        help="client data split. 'iid' (default) is the "
+                             "original equal-size random shard, "
+                             "byte-identical to every existing run. "
+                             "'dirichlet' is a label-skew non-IID split "
+                             "(Hsu et al. 2019), severity set by --alpha")
+    parser.add_argument("--alpha", type=float, default=0.5,
+                        help="Dirichlet concentration for "
+                             "--partition dirichlet: smaller = more "
+                             "skewed (0.1 severe, 0.5 moderate, "
+                             "large alpha -> approaches IID). Ignored "
+                             "for --partition iid")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -467,14 +543,16 @@ def main():
     # second code path.
     delta = args.delta if args.early_stop else -1.0
 
-    clients = split_clients(X_train, y_train)
+    clients = split_clients(X_train, y_train,
+                            partition=args.partition, alpha=args.alpha)
     federated_training(args.model, clients, X_test, y_test,
                        input_dim, num_classes,
                        rounds=args.rounds, epochs=args.epochs, lr=args.lr,
                        seed=args.seed, class_weighted=args.class_weighted,
                        resume=args.resume, delta=delta,
                        patience=args.patience, min_rounds=args.min_rounds,
-                       lr_decay=args.lr_decay, lr_min=args.lr_min)
+                       lr_decay=args.lr_decay, lr_min=args.lr_min,
+                       partition=args.partition, alpha=args.alpha)
 
 
 if __name__ == "__main__":
