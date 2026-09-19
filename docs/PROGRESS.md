@@ -156,14 +156,30 @@ Summary of everything since the last update, in order:
   still keyed on the old `"BNN"` string) and every "Uplink payload"
   axis label, which was actually plotting downlink data.
 
+## In progress: follow-up queue (matched BNN-INT8IO + sign-flip diagnostics)
+
+`run_investigation.ps1`, 7 runs. Done: `BNN-INT8IO-MATCHED` (seed 42, IID)
+best 81.75%, below the old unmatched variant (85.08%) and MLP-INT8
+(84.59%); `BNN-MATCHED` seed 43 IID best 97.05% (vs 97.75% at seed 42).
+Running/left: BNN-MATCHED seed 43 at alpha=0.5 and 0.1, BNN-INT8IO seed 43
+at IID/0.5/0.1, tracking per-round binary-weight sign-flip rate to test
+whether post-aggregation re-binarization explains the severe-skew
+collapse. Resume after any interruption (finished runs skip):
+
+```
+cd F:\UIU\11th\green\GFIDS_BNN
+powershell -NoProfile -ExecutionPolicy Bypass -File .\run_investigation.ps1
+```
+
+See `RUN_RESULTS.md` for details and the `evaluate.py` CSV-overwrite caveat.
+
 ## Open questions / next steps
 
-1. **Write the non-IID and BiPruneFL-Repro results into `main.tex`** —
-   numbers are verified and ready (this file, above), the manuscript
-   integration pass hasn't happened yet.
-2. Train a matched-capacity `BNN-INT8IO` so the int8 comparison in the
-   manuscript has the same fair footing the main comparison now has —
-   flagged as future work in Limitations, not yet done.
+1. The manuscript integration of non-IID and BiPruneFL-Repro is done
+   locally (compiles clean). Still to fold in once the queue above
+   finishes: the matched BNN-INT8IO result and the sign-flip findings.
+2. ~~Train a matched-capacity BNN-INT8IO~~ done (81.75%, see above);
+   manuscript text still to be updated.
 3. Multiple seeds for confidence intervals — a single-seed
    Colab-vs-local hardware check already showed CNN-FL moving ~6
    points and MLP-FL ~4 points with everything else held fixed, so the

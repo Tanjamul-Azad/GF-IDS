@@ -824,3 +824,47 @@ hardware energy measurement (device in hand, `code/pi_benchmark.py`
 ready, not yet run — needs the Pi on the network), and `final dig.pdf`'s
 stale "Rounds (T): e.g., 20" text (cosmetic, needs manual fixing in
 the original design tool).
+
+---
+
+## Follow-up queue in progress (started 2026-09-18): matched BNN-INT8IO + sign-flip diagnostics
+
+`run_investigation.ps1` runs seven training runs plus four evaluations.
+Sign-flip diagnostics use seed=43 on purpose: seed 42 checkpoints are the
+ones cited in the manuscript, and the paper's own Limitations section
+documents that a fixed seed does not guarantee identical results across
+hardware/library versions, so they were left untouched.
+
+**Finished so far:**
+
+| Run | Best acc (%) | Best round | Final acc (%) |
+|---|---:|---:|---:|
+| BNN-INT8IO-MATCHED, seed 42, IID | 81.75 | 32 | 76.38 |
+| BNN-MATCHED, seed 43, IID | 97.05 | 38 | 94.99 |
+
+Matched-capacity BNN-INT8IO (same 31-128-64-32-34 topology as MLP-INT8,
+15,938-scale parameters) scores 81.75%, below both the old unmatched
+BNN-INT8IO (85.08%) and MLP-INT8 (84.59%). The extra layer had therefore
+mildly helped the int8-I/O variant, and the comparison to MLP-INT8 is
+now fair. BNN-MATCHED at seed 43 reaches 97.05% against 97.75% at seed
+42, a second-seed data point supporting that the IID headline is not a
+seed fluke.
+
+**Still to run:** BNN-MATCHED seed 43 at alpha=0.5 (in progress, resumed
+from round 17/45), BNN-MATCHED seed 43 at alpha=0.1, and BNN-INT8IO
+seed 43 at IID / alpha=0.5 / alpha=0.1. Each records `sign_flip_rate`
+(fraction of binary weights that change sign between consecutive
+rounds' re-binarized global model) in its `history.pkl`.
+
+**To resume after any interruption** (safe to rerun; finished runs skip,
+the interrupted one resumes from its last checkpoint):
+
+```
+cd F:\UIU\11th\green\GFIDS_BNN
+powershell -NoProfile -ExecutionPolicy Bypass -File .\run_investigation.ps1
+```
+
+Progress: `logs\investigation.log`. Caution once it finishes:
+`evaluate.py` writes `results_{suffix}[_dir{alpha}].csv` without a seed
+tag, so the seed-43 evaluation calls overwrite the seed-42 results CSVs;
+rerun the seed-42 evaluations afterwards to restore them.
