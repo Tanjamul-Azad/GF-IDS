@@ -197,3 +197,11 @@ See `RUN_RESULTS.md` for details and the `evaluate.py` CSV-overwrite caveat.
    "Rounds (T): e.g., 20" — cosmetic, needs fixing by hand in whatever
    tool made it; not fixable from LaTeX since no source file is
    available in this environment.
+
+## FINAL: follow-up queue finished (2026-09-22)
+
+- BNN-INT8IO-MATCHED (seed 42, IID): 81.75% acc, MCC 0.8029, FPR 0.59, 15,746 params, downlink 8.72 KB, uplink 62.27, round trip 70.99 KB (14.2% below MLP-INT8's 82.75 KB, 2.84 pts lower accuracy).
+- Seed 43 best accuracy: BNN-MATCHED IID 97.05 / a0.5 96.72 / a0.1 70.94; BNN-INT8IO IID 85.94 / a0.5 79.29 / a0.1 64.82.
+- Sign-flip (mean % of binary weights flipping per round, last 20 rounds): BNN-MATCHED IID 0.0234, a0.5 0.0029, a0.1 0.0010; BNN-INT8IO 0.0635, 0.0056, 0.0019. Fewest flips at severe skew, so the "re-binarization noise" hypothesis is refuted. The a0.5-to-a0.1 cliff replicates; the severe-skew ranking does not.
+- `runs/results_best*.csv` are seed 42; seed-43 copies are `results_best_seed43_*.csv` (evaluate.py names carry no seed tag, so it overwrites).
+- Manuscript fully rewritten in simple wording (local only, 14 pages, compiles clean).
