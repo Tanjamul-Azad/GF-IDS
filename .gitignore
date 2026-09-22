@@ -18,6 +18,8 @@ archive*.zip
 # comment's stated intent -- these two exceptions restore it.
 !runs/results_*.csv
 !runs/seed_summary.csv
+!runs_nfton/results_*.csv
+!runs_unsw/results_*.csv
 runs/*.pt
 *.pt
 

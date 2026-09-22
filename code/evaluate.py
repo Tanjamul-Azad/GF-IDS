@@ -54,8 +54,9 @@ from federated_train import run_tag
 from models import MODEL_REGISTRY
 from quant_ops import QuantLinear, quant_weight_keys
 
-DATA_DIR = "./data/"
-RUN_DIR = "./runs/"
+_DS = os.environ.get("GFIDS_DATASET", "")
+DATA_DIR = f"./data_{_DS}/" if _DS else "./data/"
+RUN_DIR = f"./runs_{_DS}/" if _DS else "./runs/"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -299,6 +300,8 @@ def main():
                         help="Dirichlet alpha of the run being evaluated, "
                              "only used with --partition dirichlet, must "
                              "match the value it was trained with")
+    parser.add_argument("--aggregator", default="fedavg",
+                        choices=["fedavg", "fedprox", "signsgd", "signsgd5"])
     args = parser.parse_args()
 
     seed = None if args.seed < 0 else args.seed
@@ -311,7 +314,7 @@ def main():
     rows = []
     for name in args.models:
         tag = run_tag(name, args.class_weighted, seed,
-                      args.partition, args.alpha)
+                      args.partition, args.alpha, args.aggregator)
         ckpt = os.path.join(RUN_DIR, f"{tag}_{args.suffix}.pt")
         if not os.path.exists(ckpt):
             print(f"Skipping {name}: {ckpt} not found")
@@ -339,6 +342,8 @@ def main():
         # results_{suffix}.csv that main.tex's tables are built from.
         csv_suffix = (f"_dir{args.alpha}"
                      if args.partition == "dirichlet" else "")
+        if args.aggregator != "fedavg":
+            csv_suffix = f"_{args.aggregator}" + csv_suffix
         out_csv = os.path.join(RUN_DIR,
                                f"results_{args.suffix}{csv_suffix}.csv")
         df.to_csv(out_csv, index=False)

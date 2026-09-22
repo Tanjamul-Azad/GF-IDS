@@ -1,7 +1,7 @@
 """
 Federated training loop for GF-IDS.
 
-Simulates K = 5 IID clients over T = 20 communication rounds.
+Simulates K = 5 IID clients over T = 45 communication rounds.
 Each round every client starts from the current global model,
 trains locally for E = 5 epochs with Adam, and returns its
 parameters; the server forms a sample-count-weighted average
@@ -9,7 +9,7 @@ parameters; the server forms a sample-count-weighted average
 
 Usage
     python federated_train.py --model BNN
-    python federated_train.py --model MLP --rounds 20 --epochs 5
+    python federated_train.py --model MLP --rounds 45 --epochs 5
 
 Reproduces the per-round accuracy tables reported in the paper.
 """
@@ -30,10 +30,11 @@ from models import MODEL_REGISTRY
 from quant_ops import fake_quant, quant_weight_keys
 
 # ── Configuration (matches the reported experiments) ─────────
-DATA_DIR = "./data/"
-OUT_DIR = "./runs/"
+_DS = os.environ.get("GFIDS_DATASET", "")
+DATA_DIR = f"./data_{_DS}/" if _DS else "./data/"
+OUT_DIR = f"./runs_{_DS}/" if _DS else "./runs/"
 NUM_CLIENTS = 5
-ROUNDS = 20
+ROUNDS = 45
 LOCAL_EPOCHS = 5
 BATCH_SIZE = 256
 LEARNING_RATE = 0.0005
@@ -154,7 +155,8 @@ def get_loader(X, y, batch_size=BATCH_SIZE):
                       num_workers=0, pin_memory=True)
 
 
-def train_one_round(model, loader, optimizer, criterion, epochs):
+def train_one_round(model, loader, optimizer, criterion, epochs,
+                    prox_mu=0.0, global_params=None):
     """Local training: E epochs of Adam on one client's shard.
 
     After each step the latent weights of any binary layer are
@@ -168,6 +170,11 @@ def train_one_round(model, loader, optimizer, criterion, epochs):
             X_b, y_b = X_b.to(device), y_b.to(device)
             optimizer.zero_grad()
             loss = criterion(model(X_b), y_b)
+            if prox_mu > 0.0 and global_params is not None:
+                # FedProx: keep local weights close to the global model.
+                prox = sum(((p - g) ** 2).sum() for p, g in
+                           zip(model.parameters(), global_params))
+                loss = loss + 0.5 * prox_mu * prox
             loss.backward()
             optimizer.step()
             clip_all_binary_weights(model)
@@ -302,16 +309,48 @@ def class_weights_from(clients, num_classes):
 
 
 def run_tag(model_name, class_weighted=False, seed=None,
-            partition="iid", alpha=None):
+            partition="iid", alpha=None, aggregator="fedavg"):
     """Filename stem identifying one run, so variants never collide."""
     tag = model_name
     if class_weighted:
         tag += "_cw"
     if seed is not None:
         tag += f"_seed{seed}"
+    if aggregator != "fedavg":
+        tag += f"_{aggregator}"
     if partition == "dirichlet":
         tag += f"_dir{alpha}"
     return tag
+
+
+@torch.no_grad()
+def signsgd_vote(global_state, local_states, param_keys, step,
+                 rebinarize_keys=None, local_sizes=None):
+    """Qin et al.-style aggregation: majority vote over update signs.
+
+    Each client would upload only sign(W_k - W_global), one bit per
+    weight. The server takes the sign of the sum of those votes and
+    moves the global weights by a fixed step. Non-parameter buffers
+    (batch-norm statistics) are averaged as in FedAvg.
+    """
+    total = sum(local_sizes)
+    new_state = {}
+    for key in global_state.keys():
+        if key in param_keys:
+            votes = sum(torch.sign(ls[key] - global_state[key])
+                        for ls in local_states)
+            new_state[key] = global_state[key] + step * torch.sign(votes)
+        elif global_state[key].dtype.is_floating_point:
+            new_state[key] = sum(ls[key] * (n / total) for ls, n in
+                                 zip(local_states, local_sizes))
+        else:
+            new_state[key] = local_states[0][key]
+    if rebinarize_keys:
+        for key in rebinarize_keys:
+            if key in new_state:
+                sg = torch.sign(new_state[key])
+                new_state[key] = torch.where(sg == 0, torch.ones_like(sg), sg)
+    return new_state
 
 
 def federated_training(model_name, clients, X_test, y_test,
@@ -321,9 +360,13 @@ def federated_training(model_name, clients, X_test, y_test,
                        class_weighted=False, resume=False,
                        delta=0.001, patience=5, min_rounds=15,
                        lr_decay=1.0, lr_min=1e-6,
-                       partition="iid", alpha=None):
+                       partition="iid", alpha=None,
+                       aggregator="fedavg", mu=0.01, sign_step=0.01):
+    if aggregator == "signsgd5":
+        sign_step = 0.05
     ModelClass = MODEL_REGISTRY[model_name]
-    tag = run_tag(model_name, class_weighted, seed, partition, alpha)
+    tag = run_tag(model_name, class_weighted, seed, partition, alpha,
+                  aggregator)
     ckpt_path = os.path.join(OUT_DIR, f"{tag}_checkpoint.pt")
 
     print(f"\n{'=' * 45}\n  Training: {model_name}\n{'=' * 45}")
@@ -402,12 +445,25 @@ def federated_training(model_name, clients, X_test, y_test,
             optimizer = torch.optim.Adam(local_model.parameters(),
                                          lr=round_lr)
             loader = get_loader(client["X_train"], client["y_train"])
-            train_one_round(local_model, loader, optimizer, criterion, epochs)
+            if aggregator == "fedprox":
+                g_params = [p.detach().clone().to(device)
+                            for p in global_model.parameters()]
+                train_one_round(local_model, loader, optimizer, criterion,
+                                epochs, prox_mu=mu, global_params=g_params)
+            else:
+                train_one_round(local_model, loader, optimizer, criterion,
+                                epochs)
             local_states.append(copy.deepcopy(local_model.state_dict()))
             local_sizes.append(len(client["X_train"]))
 
-        global_model.load_state_dict(
-            fedavg(local_states, local_sizes, rebin_keys, requant_keys))
+        if aggregator in ("signsgd", "signsgd5"):
+            global_model.load_state_dict(signsgd_vote(
+                copy.deepcopy(global_model.state_dict()), local_states,
+                {n for n, _ in global_model.named_parameters()},
+                sign_step, rebin_keys, local_sizes))
+        else:
+            global_model.load_state_dict(
+                fedavg(local_states, local_sizes, rebin_keys, requant_keys))
 
         # Fraction of binary weights whose sign changed from the
         # previous round's re-binarized global model. Investigates the
@@ -557,6 +613,12 @@ def main():
                              "skewed (0.1 severe, 0.5 moderate, "
                              "large alpha -> approaches IID). Ignored "
                              "for --partition iid")
+    parser.add_argument("--aggregator", default="fedavg",
+                        choices=["fedavg", "fedprox", "signsgd", "signsgd5"])
+    parser.add_argument("--mu", type=float, default=0.01,
+                        help="FedProx proximal strength")
+    parser.add_argument("--sign-step", type=float, default=0.01,
+                        help="server step for signsgd majority vote")
     args = parser.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -584,7 +646,9 @@ def main():
                        resume=args.resume, delta=delta,
                        patience=args.patience, min_rounds=args.min_rounds,
                        lr_decay=args.lr_decay, lr_min=args.lr_min,
-                       partition=args.partition, alpha=args.alpha)
+                       partition=args.partition, alpha=args.alpha,
+                       aggregator=args.aggregator, mu=args.mu,
+                       sign_step=args.sign_step)
 
 
 if __name__ == "__main__":
