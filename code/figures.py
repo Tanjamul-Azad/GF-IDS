@@ -69,6 +69,8 @@ LABEL = {
     "BNN": "BNN-FL (extra layer)",
     "BNN-FULL": "BNN-FL (fully binarized)",
     "BiPruneFL-Repro": "BiPruneFL (reproduced)",
+    "BNN-INT8IO": "BNN-INT8IO",
+    "MLP-INT8": "MLP-INT8",
 }
 LABEL.update({m: f"{m}-FL" for m in STYLE if m not in LABEL})
 
