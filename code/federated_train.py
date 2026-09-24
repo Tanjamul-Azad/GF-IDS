@@ -364,6 +364,8 @@ def federated_training(model_name, clients, X_test, y_test,
                        aggregator="fedavg", mu=0.01, sign_step=0.01):
     if aggregator in ("signsgd5", "signsgdlat5"):
         sign_step = 0.05
+    if aggregator == "signsgdlat1":
+        sign_step = 0.001
     ModelClass = MODEL_REGISTRY[model_name]
     tag = run_tag(model_name, class_weighted, seed, partition, alpha,
                   aggregator)
@@ -456,7 +458,7 @@ def federated_training(model_name, clients, X_test, y_test,
             local_states.append(copy.deepcopy(local_model.state_dict()))
             local_sizes.append(len(client["X_train"]))
 
-        if aggregator in ("signsgd", "signsgd5", "signsgdlat", "signsgdlat5"):
+        if aggregator in ("signsgd", "signsgd5", "signsgdlat", "signsgdlat5", "signsgdlat1"):
             global_model.load_state_dict(signsgd_vote(
                 copy.deepcopy(global_model.state_dict()), local_states,
                 {n for n, _ in global_model.named_parameters()},
@@ -616,7 +618,7 @@ def main():
                              "large alpha -> approaches IID). Ignored "
                              "for --partition iid")
     parser.add_argument("--aggregator", default="fedavg",
-                        choices=["fedavg", "fedprox", "signsgd", "signsgd5", "signsgdlat", "signsgdlat5"])
+                        choices=["fedavg", "fedprox", "signsgd", "signsgd5", "signsgdlat", "signsgdlat5", "signsgdlat1"])
     parser.add_argument("--mu", type=float, default=0.01,
                         help="FedProx proximal strength")
     parser.add_argument("--sign-step", type=float, default=0.01,

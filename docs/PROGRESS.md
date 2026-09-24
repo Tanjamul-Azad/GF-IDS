@@ -205,3 +205,10 @@ See `RUN_RESULTS.md` for details and the `evaluate.py` CSV-overwrite caveat.
 - Sign-flip (mean % of binary weights flipping per round, last 20 rounds): BNN-MATCHED IID 0.0234, a0.5 0.0029, a0.1 0.0010; BNN-INT8IO 0.0635, 0.0056, 0.0019. Fewest flips at severe skew, so the "re-binarization noise" hypothesis is refuted. The a0.5-to-a0.1 cliff replicates; the severe-skew ranking does not.
 - `runs/results_best*.csv` are seed 42; seed-43 copies are `results_best_seed43_*.csv` (evaluate.py names carry no seed tag, so it overwrites).
 - Manuscript fully rewritten in simple wording (local only, 14 pages, compiles clean).
+
+## FINAL (2026-09-24): reviewer-feedback experiments
+
+- **Second dataset NF-ToN-IoT-v2** (`prepare_nfton.py`, `run_nfton.ps1`, `GFIDS_DATASET=nfton`; 544,069 train / 174,827 test flows, 31 features, 10 classes), 6 models x seeds 42/43/44, T=45, IID. Best accuracy mean±std: BNN-FL 91.61±0.08, MLP 92.83±0.02, CNN 92.92±0.09, LSTM 88.15±1.32, MLP-INT8 92.73±0.03, BNN-INT8IO 89.96±0.18. BNN-FL downlink 20.43 KB vs MLP 60.68 (-66.3%); round trip 79.61 vs 121.36 (-34.4%); MLP-INT8 round trip 78.81. Files `runs_nfton/results_best_seed{42,43,44}.csv`.
+- **Aggregators on CICIoT2023, BNN-MATCHED, seed 42:** FedAvg+re-binarize 97.75; FedProx(mu=0.01) 80.54 (best@45, 0 sign flips); Qin-style SignSGD majority vote with real-valued latent server weights: step 0.05 best 39.76@1 (last 7.24), step 0.01 62.04@6 (last 9.66), step 0.001 33.88@36 (last 30.03). A first SignSGD variant that re-binarized the server state could never flip hidden weights (72.15/64.11, 0 flips) and was discarded. `sign_flip_rate` is in percent.
+- UNSW-NB15 was also run (`runs_unsw/`) but is not IoT-specific and is not used in the paper.
+- CICIoT2023 extra seeds (`run_seeds.ps1.later`) deliberately not run.
