@@ -1,0 +1,2 @@
+Model,Accuracy(%),Macro F1,Precision,Recall,MCC,FPR(%),Parameters,FLOPs(M),BOPs(M),IOPs(M),PackedPayload(KB),AnalyticPayload(KB),Float32Payload(KB),InfTime(ms)
+BNN-MATCHED,64.11,0.2255,0.265,0.2991,0.6151,1.14,15746,0.0054,0.0102,0.0,23.52,23.52,62.27,57.2

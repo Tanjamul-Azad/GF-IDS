@@ -301,7 +301,7 @@ def main():
                              "only used with --partition dirichlet, must "
                              "match the value it was trained with")
     parser.add_argument("--aggregator", default="fedavg",
-                        choices=["fedavg", "fedprox", "signsgd", "signsgd5"])
+                        choices=["fedavg", "fedprox", "signsgd", "signsgd5", "signsgdlat", "signsgdlat5"])
     args = parser.parse_args()
 
     seed = None if args.seed < 0 else args.seed
