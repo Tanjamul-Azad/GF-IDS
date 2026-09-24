@@ -883,3 +883,7 @@ rerun the seed-42 evaluations afterwards to restore them.
 - **Aggregators on CICIoT2023, BNN-MATCHED, seed 42:** FedAvg+re-binarize 97.75; FedProx(mu=0.01) 80.54 (best@45, 0 sign flips); Qin-style SignSGD majority vote with real-valued latent server weights: step 0.05 best 39.76@1 (last 7.24), step 0.01 62.04@6 (last 9.66), step 0.001 33.88@36 (last 30.03). A first SignSGD variant that re-binarized the server state could never flip hidden weights (72.15/64.11, 0 flips) and was discarded. `sign_flip_rate` is in percent.
 - UNSW-NB15 was also run (`runs_unsw/`) but is not IoT-specific and is not used in the paper.
 - CICIoT2023 extra seeds (`run_seeds.ps1.later`) deliberately not run.
+
+## Correction (2026-09-25): energy per inference
+
+The first binary layer of BNN-MATCHED receives real-valued ReLU outputs, so its 8,192 operations are sign-controlled 32-bit additions, not XNOR-popcount. Earlier estimates priced all binary ops at 0.03 pJ (25.15 nJ). Corrected with exact thop counts (script logic: first BinaryLinear = 32-bit adds at 0.9 pJ in the Float32-I/O model, 8-bit adds at 0.03 pJ in the INT8-I/O models; later BinaryLinear = XNOR at 0.03 pJ): BNN-FL 32.46 nJ, MLP-FL 73.89, MLP-INT8 7.05, BNN-INT8IO 6.08, BNN-INT8IO-MATCHED 3.24, CNN 2068.75, LSTM 7352.05. BNN-FL is still 2.3x below MLP-FL.
