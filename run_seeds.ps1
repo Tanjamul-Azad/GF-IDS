@@ -22,7 +22,7 @@ function Run-Model($m, $seed) {
     if (-not $ok) { "=== $log gave up, continuing ===" | Out-File -Append "logs\seeds.log" }
 }
 function Eval-Group($models, $seed) {
-    python code\evaluate.py --suffix best --models @models --seed $seed *>> "logs\evaluate_seeds.log"
+    python code\evaluate.py --suffix best --models $models --seed $seed *>> "logs\evaluate_seeds.log"
     Copy-Item "runs\results_best.csv" "runs\results_best_seed$($seed)_iid_all.csv" -Force
     Copy-Item "runs\results_best_seed42_backup.csv" "runs\results_best.csv" -Force
     "=== evaluated seed $seed $(Get-Date) ===" | Out-File -Append "logs\seeds.log"
